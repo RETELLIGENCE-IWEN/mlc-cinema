@@ -17,10 +17,15 @@ The long-term goal is larger:
 `mlc-cinema` is currently at:
 
 ```text
-M0 — Desktop Replay Skeleton
+M0.5 — Aligned with Maneuver Log Contract v1
 ```
 
-M0 proves the core architecture:
+The primary supported format is the canonical
+[`maneuver-log-contract`](https://github.com/RETELLIGENCE-IWEN/maneuver-log-contract)
+**v1**. The legacy single-line `"$":"state"` demo format from M0 has
+been removed.
+
+M0.5 proves the core architecture:
 
 ```text
 MLC NDJSON
@@ -40,26 +45,32 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
 
 ---
 
-## What Works in M0
+## What Works in M0.5
 
-M0 currently supports:
+M0.5 currently supports:
 
-- Loading `.mlc.ndjson` files.
-- Parsing basic MLC records.
-- Building a frame timeline.
+- Loading canonical MLC v1 `.mlc.ndjson` files.
+- Parsing typed records: `header`, `body`, `step`, `action_spec`,
+  `reward_spec`, `event`.
+- Parsing step-scoped compact rows: `{"b":..., "x":[...28 values...]}`,
+  `{"a":..., "x":[...]}`, `{"r":..., "x":[...]}`.
+- Decoding the 28-element fundamental maneuver state vector and
+  converting NED to viewer-frame coordinates.
+- Building a frame timeline indexed by step time.
 - Displaying declared bodies/entities.
 - Replaying body positions over time.
 - Play / pause timeline control.
 - Timeline scrubbing.
-- Selected-body telemetry display.
+- Selected-body telemetry display, including step index, altitude (m),
+  and source format.
 - Basic renderer/viewport separation.
-- Unknown or future MLC record types handled without crashing.
+- Unknown typed records handled without crashing.
 
 ---
 
-## What M0 Is Not Yet
+## What M0.5 Is Not Yet
 
-M0 does **not** yet implement:
+M0.5 does **not** yet implement:
 
 - Realistic rocket meshes.
 - Full 3D camera controls.
@@ -108,16 +119,16 @@ The M0 viewport is designed to remain usable even if a hardware-accelerated rend
 
 ## Run the Example
 
-Run the included minimal example log:
+Run the included minimal MLC v1 example log:
 
 ```bash
-mlc-cinema examples/logs/minimal_demo.mlc.ndjson
+mlc-cinema examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
 Equivalent module form:
 
 ```bash
-python -m mlc_cinema.app examples/logs/minimal_demo.mlc.ndjson
+python -m mlc_cinema.app examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
 You can also launch the app without an argument:
@@ -136,76 +147,108 @@ File > Open MLC Log
 
 ## Example MLC Log
 
-A minimal MLC log is NDJSON: one JSON object per line.
+An MLC v1 log is NDJSON: one JSON object per line. Records are
+either **typed** (have a `$` field) or **step-scoped compact rows**
+(no `$`; inherit `t` and `s` from the most recent `$=step`).
 
 Example:
 
 ```json
-{"$":"header","format":1,"label":"minimal_demo","producer":"mlc-cinema-example","mode":"simulation","scenario":"single_body_demo","seed":1}
+{"$":"header","format":1,"label":"minimal_demo_v1","origin_lla":[0.651733,2.216568,120.0],"producer":"mlc-cinema-example","mode":"simulation","scenario":"single_body_mlc_v1_demo","seed":1}
 {"$":"body","id":0,"name":"rocket_0","platform":"rocket","model":"generic_vtv_booster"}
-{"$":"state","t":0.0,"b":0,"p":[0.0,0.0,100.0],"v":[0.0,0.0,-10.0],"q":[1.0,0.0,0.0,0.0],"w":[0.0,0.0,0.0]}
-{"$":"state","t":0.5,"b":0,"p":[0.0,0.0,95.0],"v":[0.0,0.0,-9.5],"q":[1.0,0.0,0.0,0.0],"w":[0.0,0.0,0.0]}
-{"$":"state","t":1.0,"b":0,"p":[0.0,0.0,90.5],"v":[0.0,0.0,-9.0],"q":[1.0,0.0,0.0,0.0],"w":[0.0,0.0,0.0]}
+{"$":"action_spec","id":0,"b":0,"fields":["raw_action_0","raw_action_1","raw_action_2","throttle_cmd","tvc_x_cmd","tvc_y_cmd"]}
+{"$":"step","s":0,"t":0.0}
+{"b":0,"x":[0.651733,2.216568,220.0,0.0,0.0,-100.0,0.0,0.0,10.0,10.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,-9.8,0.0,0.0,-9.8]}
+{"a":0,"x":[0.0,0.0,1.0,0.70,0.0,0.0]}
 ```
 
 See:
 
 ```text
-examples/logs/minimal_demo.mlc.ndjson
+examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
 ---
 
-## MLC Input Format for M0
+## MLC Input Format
 
 Each line in an `.mlc.ndjson` file is a JSON object.
 
-Each record must contain a `$` field describing the record type.
-
-M0 supports these record types:
+Some records are typed using `$`:
 
 | Record Type | Purpose |
 |---|---|
 | `header` | Run metadata |
 | `body` | Declares a body/entity |
-| `state` | Body state at a timestamp |
-
-Optional or future record types may be accepted and preserved or ignored safely.
-
-Examples of future record types:
-
-| Record Type | Future Use |
-|---|---|
+| `step` | Opens a frame at `(s, t)`; subsequent untyped rows inherit it |
 | `action_spec` | Action/control field declaration |
+| `reward_spec` | Reward field declaration |
 | `event` | Touchdown, crash, engine cutoff, stage separation, etc. |
-| `metric` | Reward, error, fuel, constraint violation, etc. |
-| `marker` | Waypoint, target, landing pad, obstacle, etc. |
 
-Unknown record types should not crash the loader.
+Step-scoped compact samples do **not** use `$` and are recognized by
+their key signature:
+
+| Compact Row | Meaning |
+|---|---|
+| `{"b": body_id, "x": [...28 values...]}` | Body fundamental maneuver state |
+| `{"a": action_spec_id, "x": [...]}` | Action sample matching an `action_spec` |
+| `{"r": reward_spec_id, "x": [...]}` | Reward sample matching a `reward_spec` |
+
+Unknown typed records should not crash the loader. Untyped rows that
+don't match any compact pattern are reported as parse errors.
 
 ---
 
-## State Record Fields
+## Body State Vector (MLC v1)
 
-M0 state records use the following fields:
+Each body state row carries a 28-element `x` vector with a fixed layout:
 
-| Field | Meaning | Required |
+| Index | Field | Unit |
 |---|---|---|
-| `t` | Timestamp in seconds | Yes |
-| `b` | Body/entity id | Yes |
-| `p` | Position `[x, y, z]` | Yes |
-| `v` | Velocity `[vx, vy, vz]` | No |
-| `q` | Scalar-first quaternion `[w, x, y, z]` | No |
-| `w` | Angular velocity `[wx, wy, wz]` | No |
+| 0 | `lat_rad` | rad |
+| 1 | `lon_rad` | rad |
+| 2 | `alt_m` | m (geodetic) |
+| 3 | `pn_m` | m (NED north) |
+| 4 | `pe_m` | m (NED east) |
+| 5 | `pd_m` | m (NED down) |
+| 6 | `vn_mps` | m/s |
+| 7 | `ve_mps` | m/s |
+| 8 | `vd_mps` | m/s |
+| 9 | `u_mps` | m/s (body x) |
+| 10 | `v_mps` | m/s (body y) |
+| 11 | `w_mps` | m/s (body z) |
+| 12 | `qw` | scalar-first quat |
+| 13 | `qx` | |
+| 14 | `qy` | |
+| 15 | `qz` | |
+| 16 | `roll_rad` | rad |
+| 17 | `pitch_rad` | rad |
+| 18 | `yaw_rad` | rad |
+| 19 | `p_radps` | rad/s (body) |
+| 20 | `q_radps` | rad/s (body) |
+| 21 | `r_radps` | rad/s (body) |
+| 22 | `an_mps2` | m/s² |
+| 23 | `ae_mps2` | m/s² |
+| 24 | `ad_mps2` | m/s² |
+| 25 | `ax_body_mps2` | m/s² |
+| 26 | `ay_body_mps2` | m/s² |
+| 27 | `az_body_mps2` | m/s² |
 
-M0 assumes:
+The MLC v1 contract specifies NED. Cinema decodes it into a viewer
+frame with Z up:
 
 ```text
-altitude = position z
-quaternion convention = [w, x, y, z]
+x_view =  pe_m
+y_view =  pn_m
+z_view = -pd_m
 ```
 
-Interpolation is not required in M0. The viewer may use nearest-frame lookup.
+`altitude_m` in the telemetry panel comes from `x[2]` (geodetic
+altitude). Producers are responsible for emitting canonical NED;
+cinema does not attempt to detect or convert other world frames.
+
+Interpolation is not required in M0.5. The viewer uses nearest-frame
+lookup.
 
 ---
 
@@ -260,7 +303,7 @@ mlc-cinema/
 
   examples/
     logs/
-      minimal_demo.mlc.ndjson
+      minimal_demo_v1.mlc.ndjson
 
   src/
     mlc_cinema/
@@ -272,6 +315,7 @@ mlc-cinema/
         reader.py
         timeline.py
         validate.py
+        mlc_v1.py
 
       scene/
         entities.py
@@ -317,13 +361,13 @@ python -m pytest
 Run the app:
 
 ```bash
-mlc-cinema examples/logs/minimal_demo.mlc.ndjson
+mlc-cinema examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
 Run through Python module entrypoint:
 
 ```bash
-python -m mlc_cinema.app examples/logs/minimal_demo.mlc.ndjson
+python -m mlc_cinema.app examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
 ---
@@ -392,6 +436,25 @@ Focus:
 - Basic playback.
 - Basic telemetry.
 - Clean architecture.
+
+---
+
+### M0.5 — Maneuver Log Contract v1 Alignment
+
+Status:
+
+```text
+Implemented
+```
+
+Focus:
+
+- Replace the legacy `"$":"state"` demo format with canonical MLC v1.
+- Step-scoped compact rows (`{"b": ..., "x": [28]}`).
+- 28-element fundamental maneuver state vector.
+- NED → viewer-frame coordinate conversion.
+- `step_index`, `altitude_m`, and `source_format` in telemetry.
+- Action / reward / event records collected for future milestones.
 
 ---
 
@@ -559,9 +622,9 @@ Apache-2.0
 ## Status Summary
 
 ```text
-Current milestone: M0
-Current role: MLC desktop replay skeleton
+Current milestone: M0.5
+Current role: MLC v1 desktop replay skeleton
 Current maturity: early prototype
-Primary value: proves the replay architecture
+Primary value: proves the replay architecture against canonical MLC v1
 Next milestone: real 3D viewport and camera controls
 ```

@@ -13,12 +13,21 @@ from mlc_cinema.scene.entities import SceneEntity
 
 @dataclass
 class SceneBodyState:
-    """Body state at a single instant, in renderer-friendly form."""
+    """Body state at a single instant, in renderer-friendly form.
+
+    ``position`` and ``velocity`` are already in the cinema viewer
+    frame (right-handed, Z up). ``altitude_m`` is geodetic altitude
+    when available (from MLC v1 ``x[2]``); the renderer's vertical
+    axis still uses ``position[2]``.
+    """
 
     body_id: int
     position: np.ndarray
     velocity: np.ndarray | None = None
     quaternion: np.ndarray | None = None
+    altitude_m: float | None = None
+    step_index: int | None = None
+    source_format: str = "unknown"
 
 
 @dataclass
@@ -39,6 +48,9 @@ def scene_frame_from_timeline_frame(frame: TimelineFrame) -> SceneFrame:
             position=state.position,
             velocity=state.velocity,
             quaternion=state.quaternion,
+            altitude_m=state.altitude_m,
+            step_index=state.step_index,
+            source_format=state.source_format,
         )
     return SceneFrame(t=frame.t, body_states=body_states)
 

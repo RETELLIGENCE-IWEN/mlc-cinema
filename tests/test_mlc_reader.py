@@ -1,4 +1,4 @@
-"""Tests for ``mlc_cinema.mlc.reader``."""
+"""Tests for ``mlc_cinema.mlc.reader`` against canonical MLC v1."""
 
 from __future__ import annotations
 
@@ -9,35 +9,40 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mlc_cinema.mlc.reader import MLCParseError, read_mlc_ndjson
+from mlc_cinema.mlc.mlc_v1 import MLC_V1_STATE_LEN
+from mlc_cinema.mlc.reader import read_mlc_ndjson
+from mlc_cinema.mlc.records import MLCParseError
 
 
-EXAMPLE = (
+EXAMPLE_V1 = (
     Path(__file__).resolve().parents[1]
     / "examples"
     / "logs"
-    / "minimal_demo.mlc.ndjson"
+    / "minimal_demo_v1.mlc.ndjson"
 )
 
 
-def test_minimal_log_can_be_read() -> None:
-    result = read_mlc_ndjson(EXAMPLE)
+def _zeros28() -> list[float]:
+    return [0.0] * MLC_V1_STATE_LEN
+
+
+# --- example file ----------------------------------------------------------
+
+def test_example_v1_log_can_be_read() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
     assert result is not None
 
 
-def test_minimal_log_header_is_parsed() -> None:
-    result = read_mlc_ndjson(EXAMPLE)
+def test_example_v1_header_is_parsed() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
     assert result.header is not None
     assert result.header.format == 1
-    assert result.header.label == "minimal_demo"
-    assert result.header.producer == "mlc-cinema-example"
-    assert result.header.scenario == "single_body_demo"
-    assert result.header.seed == 1
+    assert result.header.label == "minimal_demo_v1"
+    assert result.header.scenario == "single_body_mlc_v1_demo"
 
 
-def test_minimal_log_body_is_parsed() -> None:
-    result = read_mlc_ndjson(EXAMPLE)
-    assert 0 in result.bodies
+def test_example_v1_body_is_parsed() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
     body = result.bodies[0]
     assert body.id == 0
     assert body.name == "rocket_0"
@@ -45,51 +50,195 @@ def test_minimal_log_body_is_parsed() -> None:
     assert body.model == "generic_vtv_booster"
 
 
-def test_minimal_log_state_count() -> None:
-    result = read_mlc_ndjson(EXAMPLE)
+def test_example_v1_step_count() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
+    assert len(result.steps) == 5
+    assert [s.t for s in result.steps] == [0.0, 0.5, 1.0, 1.5, 2.0]
+    assert [s.index for s in result.steps] == [0, 1, 2, 3, 4]
+
+
+def test_example_v1_state_count() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
     assert len(result.states) == 5
 
 
-def test_state_position_is_numpy_array() -> None:
-    result = read_mlc_ndjson(EXAMPLE)
+def test_example_v1_action_samples_collected() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
+    assert len(result.action_samples) == 5
+    a0 = result.action_samples[0]
+    assert a0.spec_id == 0
+    assert a0.step_index == 0
+    assert a0.values.shape == (6,)
+    np.testing.assert_allclose(
+        a0.values, [0.0, 0.0, 1.0, 0.70, 0.0, 0.0]
+    )
+
+
+def test_example_v1_action_spec_collected() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
+    assert 0 in result.action_specs
+    spec = result.action_specs[0]
+    assert spec.body_id == 0
+    assert spec.fields[0] == "raw_action_0"
+    assert spec.fields[3] == "throttle_cmd"
+
+
+def test_example_v1_event_collected() -> None:
+    result = read_mlc_ndjson(EXAMPLE_V1)
+    assert len(result.events) == 1
+    ev = result.events[0]
+    assert ev.topic == "demo_end"
+    assert ev.body_id == 0
+    assert ev.data == {"reason": "minimal_mlc_v1_demo_complete"}
+
+
+# --- v1 body state decoding -----------------------------------------------
+
+def test_reader_parses_mlc_v1_step_scoped_body_states() -> None:
+    """Times and step indices are inherited from the most recent step."""
+
+    result = read_mlc_ndjson(EXAMPLE_V1)
+    assert len(result.states) == 5
     s0 = result.states[0]
-    assert isinstance(s0.position, np.ndarray)
-    assert s0.position.shape == (3,)
+
+    # Time inherited from step s=0, t=0.0.
+    assert s0.t == 0.0
+    assert s0.step_index == 0
+
+    # Position decoded as [pe, pn, -pd] from x[4], x[3], -x[5].
     np.testing.assert_allclose(s0.position, [0.0, 0.0, 100.0])
 
-    assert isinstance(s0.velocity, np.ndarray)
+    # Velocity decoded as [ve, vn, -vd] from x[7], x[6], -x[8].
     np.testing.assert_allclose(s0.velocity, [0.0, 0.0, -10.0])
 
-    assert isinstance(s0.quaternion, np.ndarray)
-    assert s0.quaternion.shape == (4,)
+    # Quaternion taken verbatim from x[12:16].
     np.testing.assert_allclose(s0.quaternion, [1.0, 0.0, 0.0, 0.0])
 
+    # Altitude_m taken verbatim from x[2].
+    assert s0.altitude_m == 220.0
 
-def test_unknown_record_does_not_crash(
+    # Source format tagged.
+    assert s0.source_format == "mlc_v1"
+
+    # Subsequent state inherits its later step's time.
+    s1 = result.states[1]
+    assert s1.t == 0.5
+    assert s1.step_index == 1
+    np.testing.assert_allclose(s1.position, [0.0, 0.0, 95.25])
+    assert s1.altitude_m == 215.25
+
+
+def test_v1_explicit_t_overrides_step(tmp_path: Path) -> None:
+    log = tmp_path / "explicit_t.mlc.ndjson"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"$": "header", "format": 1}),
+                json.dumps({"$": "body", "id": 0, "name": "b"}),
+                json.dumps({"$": "step", "s": 0, "t": 0.0}),
+                json.dumps(
+                    {"b": 0, "t": 7.5, "s": 99, "x": _zeros28()}
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = read_mlc_ndjson(log)
+    assert len(result.states) == 1
+    s = result.states[0]
+    assert s.t == 7.5
+    assert s.step_index == 99
+
+
+# --- error paths ----------------------------------------------------------
+
+def test_mlc_v1_body_state_without_step_or_explicit_time_raises(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "no_step.mlc.ndjson"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"$": "header", "format": 1, "label": "bad"}),
+                json.dumps({"$": "body", "id": 0, "name": "body_0"}),
+                json.dumps({"b": 0, "x": _zeros28()}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(MLCParseError, match="active step or explicit"):
+        read_mlc_ndjson(log)
+
+
+def test_mlc_v1_body_state_requires_28_values(tmp_path: Path) -> None:
+    log = tmp_path / "short_x.mlc.ndjson"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"$": "header", "format": 1}),
+                json.dumps({"$": "step", "s": 0, "t": 0.0}),
+                json.dumps({"b": 0, "x": [1.0, 2.0, 3.0]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(MLCParseError, match="28 values, got 3"):
+        read_mlc_ndjson(log)
+
+
+def test_untyped_row_without_known_compact_pattern_raises(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "weird_untyped.mlc.ndjson"
+    # No "$"; not b/x, a/x, or r/x — should be a parse error.
+    log.write_text(json.dumps({"format": 1}) + "\n", encoding="utf-8")
+    with pytest.raises(MLCParseError, match="not a known compact row"):
+        read_mlc_ndjson(log)
+
+
+def test_malformed_json_raises(tmp_path: Path) -> None:
+    log = tmp_path / "bad.mlc.ndjson"
+    log.write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(MLCParseError, match="Malformed JSON"):
+        read_mlc_ndjson(log)
+
+
+def test_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(MLCParseError, match="not found"):
+        read_mlc_ndjson(tmp_path / "does_not_exist.mlc.ndjson")
+
+
+# --- robustness -----------------------------------------------------------
+
+def test_unknown_typed_record_does_not_crash(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    log_path = tmp_path / "with_unknown.mlc.ndjson"
-    lines = [
-        {"$": "header", "format": 1},
-        {"$": "body", "id": 0, "name": "a"},
-        {"$": "state", "t": 0.0, "b": 0, "p": [0.0, 0.0, 0.0]},
-        {"$": "totally_unknown_kind", "payload": [1, 2, 3]},
-        {"$": "metric", "t": 0.0, "name": "ignored_in_m0", "value": 42.0},
-    ]
-    log_path.write_text(
-        "\n".join(json.dumps(rec) for rec in lines), encoding="utf-8"
+    log = tmp_path / "with_unknown_typed.mlc.ndjson"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"$": "header", "format": 1}),
+                json.dumps({"$": "body", "id": 0, "name": "x"}),
+                json.dumps({"$": "step", "s": 0, "t": 0.0}),
+                json.dumps({"b": 0, "x": _zeros28()}),
+                json.dumps({"$": "totally_unknown_kind", "payload": [1, 2, 3]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
     with caplog.at_level(logging.WARNING, logger="mlc_cinema.mlc.reader"):
-        result = read_mlc_ndjson(log_path)
+        result = read_mlc_ndjson(log)
 
     assert len(result.states) == 1
-    # Unknown records should be retained for future use; recognised
-    # optional types like "metric" are kept but not warned about.
     assert any(
-        rec.get("$") == "totally_unknown_kind" for rec in result.unknown_records
+        rec.get("$") == "totally_unknown_kind"
+        for rec in result.unknown_records
     )
-    # Exactly one warning for the genuinely-unknown record kind.
     unknown_warnings = [
         r for r in caplog.records if "Unknown MLC record type" in r.getMessage()
     ]
@@ -97,50 +246,23 @@ def test_unknown_record_does_not_crash(
 
 
 def test_skips_blank_lines(tmp_path: Path) -> None:
-    log_path = tmp_path / "with_blanks.mlc.ndjson"
-    log_path.write_text(
+    log = tmp_path / "with_blanks.mlc.ndjson"
+    log.write_text(
         "\n".join(
             [
                 "",
                 json.dumps({"$": "header", "format": 1}),
                 "",
                 json.dumps({"$": "body", "id": 0, "name": "x"}),
-                json.dumps({"$": "state", "t": 0.0, "b": 0, "p": [0, 0, 0]}),
+                json.dumps({"$": "step", "s": 0, "t": 0.0}),
+                "",
+                json.dumps({"b": 0, "x": _zeros28()}),
                 "",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    result = read_mlc_ndjson(log_path)
+    result = read_mlc_ndjson(log)
     assert result.header is not None
     assert len(result.states) == 1
-
-
-def test_malformed_json_raises(tmp_path: Path) -> None:
-    log_path = tmp_path / "bad.mlc.ndjson"
-    log_path.write_text("{not json}\n", encoding="utf-8")
-    with pytest.raises(MLCParseError):
-        read_mlc_ndjson(log_path)
-
-
-def test_state_missing_required_field_raises(tmp_path: Path) -> None:
-    log_path = tmp_path / "missing_p.mlc.ndjson"
-    log_path.write_text(
-        json.dumps({"$": "state", "t": 0.0, "b": 0}) + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(MLCParseError):
-        read_mlc_ndjson(log_path)
-
-
-def test_missing_dollar_field_raises(tmp_path: Path) -> None:
-    log_path = tmp_path / "no_kind.mlc.ndjson"
-    log_path.write_text(json.dumps({"format": 1}) + "\n", encoding="utf-8")
-    with pytest.raises(MLCParseError):
-        read_mlc_ndjson(log_path)
-
-
-def test_missing_file_raises(tmp_path: Path) -> None:
-    with pytest.raises(MLCParseError):
-        read_mlc_ndjson(tmp_path / "does_not_exist.mlc.ndjson")

@@ -44,14 +44,16 @@ class TelemetryPanel(QWidget):
         self._subtitle = QLabel("")
         self._subtitle.setStyleSheet("color: #aab; ")
 
-        # Time-related
+        # Identity + frame context
         self._time = self._make_value()
-        # Identity
+        self._step_index = self._make_value()
         self._body_id = self._make_value()
+        self._source_format = self._make_value()
         # Position
         self._pos_x = self._make_value()
         self._pos_y = self._make_value()
         self._pos_z = self._make_value()
+        self._altitude_m = self._make_value()
         # Velocity
         self._vel_x = self._make_value()
         self._vel_y = self._make_value()
@@ -62,19 +64,19 @@ class TelemetryPanel(QWidget):
         self._q_x = self._make_value()
         self._q_y = self._make_value()
         self._q_z = self._make_value()
-        # Derived
-        self._altitude = self._make_value()
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         form.setFormAlignment(Qt.AlignTop | Qt.AlignLeft)
         form.addRow("time (s)", self._time)
+        form.addRow("step index", self._step_index)
         form.addRow("body id", self._body_id)
+        form.addRow("source format", self._source_format)
         form.addRow(_separator(), QLabel(""))
         form.addRow("position x", self._pos_x)
         form.addRow("position y", self._pos_y)
         form.addRow("position z", self._pos_z)
-        form.addRow("altitude (z)", self._altitude)
+        form.addRow("altitude (m)", self._altitude_m)
         form.addRow(_separator(), QLabel(""))
         form.addRow("velocity x", self._vel_x)
         form.addRow("velocity y", self._vel_y)
@@ -120,10 +122,17 @@ class TelemetryPanel(QWidget):
             return
 
         self._body_id.setText(str(state.body_id))
+        self._step_index.setText(
+            str(state.step_index) if state.step_index is not None else _NA
+        )
+        self._source_format.setText(state.source_format or _NA)
+
         self._pos_x.setText(_fmt(state.position[0]))
         self._pos_y.setText(_fmt(state.position[1]))
         self._pos_z.setText(_fmt(state.position[2]))
-        self._altitude.setText(_fmt(state.position[2]))
+        self._altitude_m.setText(
+            _fmt(state.altitude_m) if state.altitude_m is not None else _NA
+        )
 
         if state.velocity is not None:
             self._vel_x.setText(_fmt(state.velocity[0]))
@@ -147,13 +156,15 @@ class TelemetryPanel(QWidget):
     def clear(self) -> None:
         self._time.setText(_NA)
         self._body_id.setText(_NA)
+        self._step_index.setText(_NA)
+        self._source_format.setText(_NA)
         self._clear_state_only()
 
     # ----- helpers -----
 
     def _clear_state_only(self) -> None:
         for w in (
-            self._pos_x, self._pos_y, self._pos_z, self._altitude,
+            self._pos_x, self._pos_y, self._pos_z, self._altitude_m,
             self._vel_x, self._vel_y, self._vel_z, self._speed,
             self._q_w, self._q_x, self._q_y, self._q_z,
         ):
