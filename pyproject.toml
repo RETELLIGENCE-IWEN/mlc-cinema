@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlc-cinema"
+version = "0.0.1"
+description = "MLC-native 3D replay and engineering analysis viewer."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "mlc-cinema contributors" }]
+license = { text = "Proprietary" }
+dependencies = [
+  "numpy",
+  "PySide6",
+  "pygfx",
+  "wgpu",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+mlc-cinema = "mlc_cinema.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mlc_cinema = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
