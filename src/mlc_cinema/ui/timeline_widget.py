@@ -1,9 +1,11 @@
-"""Bottom playback bar: play/pause button, scrubber, time/frame readouts."""
+"""Bottom playback bar: play/pause, speed multiplier, scrubber, time/frame readouts."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -11,15 +13,36 @@ from PySide6.QtWidgets import (
     QSlider,
     QWidget,
 )
-from PySide6.QtCore import Qt
+
+from mlc_cinema.config import (
+    DEFAULT_PLAYBACK_SPEED,
+    MAX_PLAYBACK_SPEED,
+    MIN_PLAYBACK_SPEED,
+)
+
+
+class _SpeedSpinBox(QDoubleSpinBox):
+    """``QDoubleSpinBox`` with adaptive precision so 0.001 and 1000 both look right."""
+
+    def textFromValue(self, value: float) -> str:  # noqa: N802 (Qt API)
+        v = float(value)
+        if v >= 100.0:
+            return f"{v:.0f}"
+        if v >= 10.0:
+            return f"{v:.1f}"
+        if v >= 1.0:
+            return f"{v:.2f}"
+        return f"{v:.3f}"
 
 
 class TimelineWidget(QWidget):
     """Playback transport. Decoupled from the controller: emits intent signals
-    (``play_toggled``, ``frame_requested``) that the main window wires up."""
+    (``play_toggled``, ``frame_requested``, ``speed_changed``) that the main
+    window wires up."""
 
     play_toggled = Signal()
     frame_requested = Signal(int)
+    speed_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -27,6 +50,22 @@ class TimelineWidget(QWidget):
         self._play_btn = QPushButton("Play")
         self._play_btn.setEnabled(False)
         self._play_btn.setFixedWidth(80)
+
+        self._speed_label = QLabel("Speed:")
+        self._speed_spin = _SpeedSpinBox()
+        self._speed_spin.setRange(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+        self._speed_spin.setDecimals(3)
+        self._speed_spin.setValue(DEFAULT_PLAYBACK_SPEED)
+        self._speed_spin.setSuffix(" ×")  # ' ×'
+        self._speed_spin.setKeyboardTracking(False)
+        self._speed_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self._speed_spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._speed_spin.setFixedWidth(96)
+        self._speed_spin.setToolTip(
+            "Playback speed multiplier (0.001 – 1000).\n"
+            "1× = wall-clock matches recorded timeline duration.\n"
+            "Type a value and press Enter."
+        )
 
         self._slider = QSlider(Qt.Horizontal)
         self._slider.setEnabled(False)
@@ -49,6 +88,8 @@ class TimelineWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.addWidget(self._play_btn)
+        layout.addWidget(self._speed_label)
+        layout.addWidget(self._speed_spin)
         layout.addWidget(self._slider, 1)
         layout.addWidget(self._frame_label)
         layout.addWidget(self._time_label)
@@ -56,8 +97,10 @@ class TimelineWidget(QWidget):
 
         self._play_btn.clicked.connect(self.play_toggled.emit)
         self._slider.valueChanged.connect(self._on_slider_value_changed)
+        self._speed_spin.valueChanged.connect(self._on_speed_value_changed)
 
         self._suppress_slider = False
+        self._suppress_speed = False
 
     # ----- public API -----
 
@@ -99,9 +142,26 @@ class TimelineWidget(QWidget):
     def set_playing(self, is_playing: bool) -> None:
         self._play_btn.setText("Pause" if is_playing else "Play")
 
+    def set_speed(self, speed: float) -> None:
+        """Reflect a controller-side speed change without re-emitting."""
+
+        self._suppress_speed = True
+        try:
+            self._speed_spin.setValue(float(speed))
+        finally:
+            self._suppress_speed = False
+
+    def current_speed(self) -> float:
+        return float(self._speed_spin.value())
+
     # ----- internal -----
 
     def _on_slider_value_changed(self, value: int) -> None:
         if self._suppress_slider:
             return
         self.frame_requested.emit(int(value))
+
+    def _on_speed_value_changed(self, value: float) -> None:
+        if self._suppress_speed:
+            return
+        self.speed_changed.emit(float(value))

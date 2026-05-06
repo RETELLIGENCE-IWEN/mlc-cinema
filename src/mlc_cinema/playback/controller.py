@@ -3,11 +3,14 @@
 This is a thin Qt object that owns:
 
   * the current frame index;
-  * a ``QTimer`` that advances the frame index at a configurable rate;
-  * signals so the UI can react without polling.
+  * a fixed-rate ``QTimer`` (``PLAYBACK_TICK_HZ``);
+  * a wall-clock-aligned playback position in *timeline seconds*;
+  * a speed multiplier in ``[MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED]``.
 
-Behaviour at the end of the timeline is **pause-at-end**, as specified
-for M0. Looping can be added later.
+At ``speed == 1.0`` a ``T``-second timeline plays in ``T`` real
+seconds. Each timer tick advances the playback position by
+``dt_real * speed`` and snaps to the nearest frame. End-of-timeline
+behaviour is **pause-at-end** for M0/M0.5.
 """
 
 from __future__ import annotations
@@ -16,7 +19,12 @@ import logging
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
-from mlc_cinema.config import DEFAULT_PLAYBACK_FPS
+from mlc_cinema.config import (
+    DEFAULT_PLAYBACK_SPEED,
+    MAX_PLAYBACK_SPEED,
+    MIN_PLAYBACK_SPEED,
+    PLAYBACK_TICK_HZ,
+)
 from mlc_cinema.mlc.timeline import MLCTimeline, TimelineError, TimelineFrame
 
 _log = logging.getLogger(__name__)
@@ -28,12 +36,13 @@ class PlaybackController(QObject):
     # (frame_index, frame_time_seconds)
     frame_changed = Signal(int, float)
     playing_changed = Signal(bool)
+    speed_changed = Signal(float)
 
     def __init__(
         self,
         timeline: MLCTimeline,
         parent: QObject | None = None,
-        fps: float = DEFAULT_PLAYBACK_FPS,
+        speed: float = DEFAULT_PLAYBACK_SPEED,
     ) -> None:
         super().__init__(parent)
         if not timeline.frames:
@@ -43,12 +52,16 @@ class PlaybackController(QObject):
 
         self._timeline = timeline
         self._frame_index: int = 0
-        self._fps: float = max(0.1, float(fps))
+        # Free-running playback position in timeline seconds. Kept
+        # separate from the frame index so we can advance smoothly
+        # between frames at low speeds and skip cleanly at high speeds.
+        self._timeline_t: float = timeline.start_time_s
+        self._speed: float = self._clamp_speed(speed)
 
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
+        self._timer.setInterval(max(1, int(round(1000.0 / PLAYBACK_TICK_HZ))))
         self._timer.timeout.connect(self._on_tick)
-        self._apply_fps()
 
     # ----- public API -----
 
@@ -69,19 +82,23 @@ class PlaybackController(QObject):
         return self._timer.isActive()
 
     @property
-    def fps(self) -> float:
-        return self._fps
+    def speed(self) -> float:
+        return self._speed
 
-    def set_fps(self, fps: float) -> None:
-        self._fps = max(0.1, float(fps))
-        self._apply_fps()
+    def set_speed(self, speed: float) -> None:
+        new_speed = self._clamp_speed(speed)
+        if new_speed == self._speed:
+            return
+        self._speed = new_speed
+        _log.debug("Playback speed set to %.4fx", self._speed)
+        self.speed_changed.emit(self._speed)
 
     def play(self) -> None:
         if self.is_playing:
             return
+        # If we're sitting at the end of the timeline, pressing play
+        # should rewind so the user doesn't need to scrub manually.
         if self._frame_index >= self.frame_count - 1:
-            # Pressing play at the end rewinds to the start so the user
-            # doesn't have to scrub back manually.
             self.set_frame_index(0)
         self._timer.start()
         self.playing_changed.emit(True)
@@ -101,8 +118,12 @@ class PlaybackController(QObject):
     def set_frame_index(self, index: int) -> None:
         index = max(0, min(self.frame_count - 1, int(index)))
         if index == self._frame_index:
+            # Even on a no-op, keep the playback position in sync so
+            # subsequent ticks advance from the visible frame.
+            self._timeline_t = self.current_frame().t
             return
         self._frame_index = index
+        self._timeline_t = self.current_frame().t
         self.frame_changed.emit(self._frame_index, self.current_frame().t)
 
     def step_forward(self) -> None:
@@ -125,15 +146,34 @@ class PlaybackController(QObject):
 
     # ----- internal -----
 
-    def _apply_fps(self) -> None:
-        interval_ms = max(1, int(round(1000.0 / self._fps)))
-        self._timer.setInterval(interval_ms)
+    @staticmethod
+    def _clamp_speed(speed: float) -> float:
+        try:
+            s = float(speed)
+        except (TypeError, ValueError):
+            s = DEFAULT_PLAYBACK_SPEED
+        if s != s:  # NaN guard
+            s = DEFAULT_PLAYBACK_SPEED
+        return max(MIN_PLAYBACK_SPEED, min(MAX_PLAYBACK_SPEED, s))
 
     def _on_tick(self) -> None:
-        next_index = self._frame_index + 1
-        if next_index >= self.frame_count:
-            # Pause-at-end semantics for M0.
+        dt_real = self._timer.interval() / 1000.0
+        self._timeline_t += dt_real * self._speed
+
+        end_t = self._timeline.end_time_s
+        if self._timeline_t >= end_t:
+            self._timeline_t = end_t
+            last_index = self.frame_count - 1
+            if last_index != self._frame_index:
+                self._frame_index = last_index
+                self.frame_changed.emit(
+                    self._frame_index, self.current_frame().t
+                )
+            # Pause-at-end semantics for M0.5.
             self.pause()
             return
-        self._frame_index = next_index
-        self.frame_changed.emit(self._frame_index, self.current_frame().t)
+
+        new_index = self._timeline.nearest_frame_index(self._timeline_t)
+        if new_index != self._frame_index:
+            self._frame_index = new_index
+            self.frame_changed.emit(self._frame_index, self.current_frame().t)

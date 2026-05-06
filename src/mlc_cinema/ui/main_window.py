@@ -11,7 +11,14 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -21,7 +28,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mlc_cinema.config import APP_DISPLAY_NAME, DEFAULT_PLAYBACK_FPS
+
+# Suffixes accepted both by the File dialog and by drag-and-drop.
+_MLC_FILE_SUFFIXES: tuple[str, ...] = (".mlc.ndjson", ".ndjson", ".json")
+
+
+def _looks_like_mlc_file(p: Path) -> bool:
+    if not p.is_file():
+        return False
+    lower = p.name.lower()
+    return any(lower.endswith(s) for s in _MLC_FILE_SUFFIXES)
+
+from mlc_cinema.config import APP_DISPLAY_NAME, DEFAULT_PLAYBACK_SPEED
 from mlc_cinema.mlc.reader import MLCParseError, read_mlc_ndjson
 from mlc_cinema.mlc.timeline import (
     MLCTimeline,
@@ -51,6 +69,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(1200, 760)
+        # Allow MLC files to be dropped onto the window from a file
+        # explorer; see ``dragEnterEvent`` / ``dropEvent`` below.
+        self.setAcceptDrops(True)
 
         # --- viewport (central) ---
         self._viewport = MLCViewport(self)
@@ -86,11 +107,15 @@ class MainWindow(QMainWindow):
         self._entities: dict[int, SceneEntity] = {}
         self._controller: PlaybackController | None = None
         self._selected_body_id: int | None = None
+        # Persisted across file loads so reopening a log doesn't reset
+        # the user's chosen playback speed.
+        self._playback_speed: float = DEFAULT_PLAYBACK_SPEED
 
         # --- signal wiring (UI side) ---
         self._entity_tree.body_selected.connect(self._on_body_selected)
         self._timeline_widget.play_toggled.connect(self._on_play_toggled)
         self._timeline_widget.frame_requested.connect(self._on_frame_requested)
+        self._timeline_widget.speed_changed.connect(self._on_speed_changed)
 
     # ----- public API -----
 
@@ -185,6 +210,7 @@ class MainWindow(QMainWindow):
                 pass
             self._controller.frame_changed.disconnect()
             self._controller.playing_changed.disconnect()
+            self._controller.speed_changed.disconnect()
             self._controller.deleteLater()
             self._controller = None
 
@@ -206,13 +232,16 @@ class MainWindow(QMainWindow):
         self._viewport.reset_trails()
 
         self._controller = PlaybackController(
-            timeline, parent=self, fps=DEFAULT_PLAYBACK_FPS
+            timeline, parent=self, speed=self._playback_speed
         )
         self._controller.frame_changed.connect(self._on_frame_changed)
         self._controller.playing_changed.connect(self._on_playing_changed)
+        self._controller.speed_changed.connect(self._on_controller_speed_changed)
 
         self._timeline_widget.configure_for_timeline(len(timeline.frames))
         self._timeline_widget.set_playing(False)
+        # Keep the spinbox in sync with the (possibly clamped) speed.
+        self._timeline_widget.set_speed(self._controller.speed)
 
         # Render the first frame immediately so the user sees something.
         self._controller.set_frame_index(0)
@@ -239,6 +268,12 @@ class MainWindow(QMainWindow):
     def _on_playing_changed(self, playing: bool) -> None:
         self._timeline_widget.set_playing(playing)
 
+    def _on_controller_speed_changed(self, speed: float) -> None:
+        # Controller may have clamped the requested value; reflect the
+        # actual speed back to the spinbox and persist it.
+        self._playback_speed = float(speed)
+        self._timeline_widget.set_speed(speed)
+
     # ----- ui events -----
 
     def _on_body_selected(self, body_id: int) -> None:
@@ -254,6 +289,13 @@ class MainWindow(QMainWindow):
         if self._controller is None:
             return
         self._controller.toggle_play()
+
+    def _on_speed_changed(self, speed: float) -> None:
+        # User edited the spinbox. Always persist; only forward to a
+        # live controller if one exists.
+        self._playback_speed = float(speed)
+        if self._controller is not None:
+            self._controller.set_speed(speed)
 
     def _on_frame_requested(self, index: int) -> None:
         if self._controller is None:
@@ -280,6 +322,57 @@ class MainWindow(QMainWindow):
         if self._controller is None:
             return
         self._on_frame_requested(self._controller.frame_index + 1)
+
+    # ----- drag-and-drop -----
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 (Qt API)
+        if self._mlc_paths_from_event(event):
+            event.acceptProposedAction()
+            self.statusBar().showMessage("Drop to open MLC log...")
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 (Qt API)
+        # Required so Qt continues to forward dropEvent. Same predicate
+        # as dragEnterEvent — re-evaluating here is cheap.
+        if self._mlc_paths_from_event(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802 (Qt API)
+        self.statusBar().clearMessage()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 (Qt API)
+        paths = self._mlc_paths_from_event(event)
+        if not paths:
+            event.ignore()
+            self.statusBar().showMessage(
+                "Drop ignored: no MLC NDJSON file found."
+            )
+            return
+        event.acceptProposedAction()
+        if len(paths) > 1:
+            self.statusBar().showMessage(
+                f"{len(paths)} files dropped; opening {paths[0].name}"
+            )
+        self._load_file(paths[0])
+
+    @staticmethod
+    def _mlc_paths_from_event(event) -> list[Path]:
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return []
+        paths: list[Path] = []
+        for url in mime.urls():
+            local = url.toLocalFile()
+            if not local:
+                continue
+            p = Path(local)
+            if _looks_like_mlc_file(p):
+                paths.append(p)
+        return paths
 
     # ----- helpers -----
 
