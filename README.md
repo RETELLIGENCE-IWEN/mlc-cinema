@@ -22,10 +22,10 @@ M1.0 — Real 3D viewport
 
 The primary supported format is the canonical
 [`maneuver-log-contract`](https://github.com/RETELLIGENCE-IWEN/maneuver-log-contract)
-**v1**. The legacy single-line `"$":"state"` demo format from M0 has
-been removed.
+**v1**. The earlier single-line `"$":"state"` demo format has been
+removed.
 
-M0.5 proves the core architecture:
+The pipeline:
 
 ```text
 MLC NDJSON
@@ -74,10 +74,13 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
 
 ## What is Not Yet Implemented
 
-M0.5 does **not** yet implement:
+The current version does **not** yet implement:
 
+- Body-to-viewer attitude conversion (rocket attitude is shown as the
+  raw NED-frame quaternion; visually approximate but not yet
+  frame-correct — see roadmap M1.1).
 - Realistic rocket meshes.
-- Full 3D camera controls.
+- Pan / advanced camera controls.
 - Thrust vector visualization.
 - Throttle flame visualization.
 - Propellant gauges.
@@ -116,8 +119,11 @@ The project currently depends on:
 - `PySide6`
 - `pygfx`
 - `wgpu`
+- `rendercanvas` (newer wgpu releases ship Qt canvas integration here)
 
-The M0 viewport is designed to remain usable even if a hardware-accelerated renderer is not available. In that case, the app can fall back to a simpler Qt-painted projection instead of failing immediately.
+The viewport stays usable even if the hardware-accelerated renderer
+is unavailable: the dispatcher falls back to a simpler Qt-painted 2D
+projection instead of failing to launch.
 
 ---
 
@@ -282,8 +288,7 @@ z_view = -pd_m
 altitude). Producers are responsible for emitting canonical NED;
 cinema does not attempt to detect or convert other world frames.
 
-Interpolation is not required in M0.5. The viewer uses nearest-frame
-lookup.
+Interpolation is not required. The viewer uses nearest-frame lookup.
 
 ---
 
@@ -541,29 +546,83 @@ Focus:
 Recommended next milestone:
 
 ```text
-M1.5 — Replay UX and inspection polish
+M1.1 — Attitude Frame Correctness
 ```
 
 ---
 
-### M1 — Real 3D Viewport (umbrella)
+### M1.1 — Attitude Frame Correctness
+
+Status:
+
+```text
+Planned
+```
 
 Goal:
 
 ```text
-Upgrade from basic projection/placeholder rendering to a more capable 3D viewport.
+Make rendered body orientation match the MLC v1 attitude in the
+viewer frame, not just the raw NED quaternion.
 ```
 
-Possible features:
+The current renderer converts position and velocity from NED to the
+cinema viewer frame:
 
-- Proper 3D camera.
-- Orbit / pan / zoom controls.
-- Ground grid.
-- World axes.
-- Body primitives.
-- Trajectory trails.
-- Better scaling and framing.
-- Basic screenshot capture.
+```text
+x_view =  pe
+y_view =  pn
+z_view = -pd
+```
+
+…but feeds the body quaternion through unchanged (after
+`(w,x,y,z) → (x,y,z,w)` for pylinalg). That is acceptable for M1.0
+rough replay, but bodies' orientations are visually off because
+``q_body_to_NED`` is not the same as ``q_body_to_viewer``.
+
+M1.1 should:
+
+- Add an explicit attitude conversion in `mlc_v1.py` (or a new
+  `scene/attitude.py`): ``q_body_to_viewer = q_NED_to_viewer · q_body_to_NED``.
+- Apply the conversion at decode time, so renderers always receive
+  viewer-frame quaternions.
+- Add unit tests against synthetic attitudes
+  (e.g. yaw=90° about NED-down should rotate body forward from north
+  to east in the viewer).
+- Update the renderer to assume the quaternion is already
+  viewer-frame.
+
+This must land before any rocket-attitude / thrust-vector work in M2.
+
+---
+
+### M1.5 — Replay UX and Inspection Polish
+
+Status:
+
+```text
+Planned
+```
+
+Goal:
+
+```text
+Smoother, more inspectable replay for long high-rate logs.
+```
+
+Possible work items:
+
+- **Per-body trajectory caching.** Today the pygfx renderer rebuilds
+  trail point lists from `timeline.frames[0..frame_index]` on every
+  `set_scene_frame` call. For a 30 s / 100 Hz log that's 3000 list
+  copies per frame change while playing. Cache `(N, 3)` numpy arrays
+  per body once in `set_timeline()`, then on each frame slice the
+  cached array.
+- Optional pan camera control + `Shift`-drag mapping.
+- "Show full trail / trail up to current frame" toggle.
+- Screenshot export to PNG.
+- Smarter grid step sizing from `SceneBounds`.
+- Mouse-hover entity picking → telemetry panel.
 
 ---
 
@@ -651,27 +710,26 @@ Possible features:
 
 ## Near-Term Priority
 
-The recommended next step after M0 is:
+The current version is M1.0 (real 3D viewport). The recommended next
+steps, in order, are:
 
 ```text
-M1 — Real 3D Viewport
+M1.1 — Attitude Frame Correctness
+M1.5 — Replay UX and Inspection Polish
+M2.0 — Rocket Visualization Layer
 ```
 
-M1 should focus on making the visual scene genuinely useful while preserving the existing architecture.
+M1.1 is a small but important correctness milestone: rocket attitude
+will not be visually right until ``q_body_to_NED`` is converted to
+``q_body_to_viewer`` in the decoder. This must land before any
+rocket-attitude / thrust-vector work in M2.
 
-Do not rush into simulator-specific features too early. First make the generic MLC replay experience solid.
+M1.5 is a polish milestone: cache per-body trajectory arrays so trail
+recomputation stays cheap for long high-rate logs, plus assorted
+inspection-experience improvements.
 
-Recommended M1 priorities:
-
-1. Stable 3D camera.
-2. Ground grid and axes.
-3. Body primitives.
-4. Trajectory trails.
-5. Better viewport scaling.
-6. Frame/time display polish.
-7. Screenshot export if easy.
-
-After that, add rocket-specific visual semantics in M2.
+Do not rush into simulator-specific features too early. First make
+the generic MLC replay experience solid and frame-correct.
 
 ---
 
@@ -691,19 +749,9 @@ In this sense, `mlc-cinema` is not just a viewer. It is the first desktop analys
 
 ## License
 
-Add a license before public release or reuse by other projects.
-
-Recommended default:
-
-```text
-MIT License
-```
-
-or, if stronger copyleft is desired:
-
-```text
-Apache-2.0
-```
+`mlc-cinema` is proprietary. Not licensed for redistribution or
+external reuse at this time. See `pyproject.toml` for the declared
+license string.
 
 ---
 
