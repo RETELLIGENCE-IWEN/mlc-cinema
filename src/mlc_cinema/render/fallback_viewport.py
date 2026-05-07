@@ -26,6 +26,22 @@ from mlc_cinema.config import DEFAULT_TRAIL_LENGTH
 from mlc_cinema.mlc.timeline import MLCTimeline
 from mlc_cinema.scene.entities import SceneEntity
 from mlc_cinema.scene.scene_model import SceneFrame
+from mlc_cinema.scene.trajectory import (
+    TrajectoryCache,
+    build_trajectory_cache,
+    full_trajectory_points,
+    trajectory_points_up_to_frame,
+)
+
+
+# Trail-mode constants mirror those in pygfx_renderer.py so the UI
+# can pass the same string values to either backend.
+TRAIL_MODE_HIDDEN: str = "hidden"
+TRAIL_MODE_TO_CURRENT: str = "to_current"
+TRAIL_MODE_FULL: str = "full"
+_VALID_TRAIL_MODES: frozenset[str] = frozenset(
+    {TRAIL_MODE_HIDDEN, TRAIL_MODE_TO_CURRENT, TRAIL_MODE_FULL}
+)
 
 _log = logging.getLogger(__name__)
 
@@ -67,6 +83,11 @@ class FallbackViewport(QWidget):
         self._frame_index: int = 0
         self._selected_body_id: int | None = None
         self._trail_length: int = DEFAULT_TRAIL_LENGTH
+
+        # Trajectory cache + trail display state (mirrors pygfx backend).
+        self._trajectory_cache: TrajectoryCache | None = None
+        self._trail_mode: str = TRAIL_MODE_TO_CURRENT
+        self._trails_visible: bool = True
 
         # Cached extents for auto-fitting the camera. Updated as new
         # frames arrive so the view follows the scene.
@@ -146,8 +167,37 @@ class FallbackViewport(QWidget):
 
     def set_timeline(self, timeline: MLCTimeline | None) -> None:
         self._timeline = timeline
+        if timeline is not None and timeline.frames:
+            self._trajectory_cache = build_trajectory_cache(timeline)
+        else:
+            self._trajectory_cache = None
         for vis in self._entities.values():
             vis.trail.clear()
+
+    def set_trail_mode(self, mode: str) -> None:
+        if mode not in _VALID_TRAIL_MODES:
+            _log.warning("Unknown trail mode %r; ignoring", mode)
+            return
+        self._trail_mode = mode
+        if self._timeline is not None:
+            self._refresh_trails_from_timeline()
+        self.update()
+
+    def set_trails_visible(self, visible: bool) -> None:
+        self._trails_visible = bool(visible)
+        if self._timeline is not None:
+            self._refresh_trails_from_timeline()
+        self.update()
+
+    def save_screenshot(self, path) -> bool:  # path: str | Path
+        try:
+            pixmap = self.grab()
+            if pixmap is None or pixmap.isNull():
+                return False
+            return bool(pixmap.save(str(path), "PNG"))
+        except Exception:  # pragma: no cover
+            _log.exception("Fallback screenshot save failed")
+            return False
 
     def set_selected_body(self, body_id: int | None) -> None:
         self._selected_body_id = body_id
@@ -167,19 +217,24 @@ class FallbackViewport(QWidget):
         self.reset_camera()
 
     def _refresh_trails_from_timeline(self) -> None:
-        if self._timeline is None:
+        if self._trajectory_cache is None:
             return
-        end = max(0, min(self._frame_index + 1, len(self._timeline.frames)))
         for vis in self._entities.values():
             vis.trail.clear()
-        for i in range(end):
-            f = self._timeline.frames[i]
-            for body_id, state in f.states_by_body.items():
-                vis = self._entities.get(body_id)
-                if vis is not None:
-                    vis.trail.append(
-                        np.asarray(state.position, dtype=np.float64)
-                    )
+        if not self._trails_visible or self._trail_mode == TRAIL_MODE_HIDDEN:
+            return
+        for body_id, vis in self._entities.items():
+            trajectory = self._trajectory_cache.trajectories.get(body_id)
+            if trajectory is None:
+                continue
+            if self._trail_mode == TRAIL_MODE_FULL:
+                pts = full_trajectory_points(trajectory)
+            else:
+                pts = trajectory_points_up_to_frame(
+                    trajectory, self._frame_index
+                )
+            for i in range(pts.shape[0]):
+                vis.trail.append(np.asarray(pts[i], dtype=np.float64))
 
     # ----- camera extents -----
 

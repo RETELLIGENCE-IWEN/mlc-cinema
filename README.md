@@ -17,7 +17,7 @@ The long-term goal is larger:
 `mlc-cinema` is currently at:
 
 ```text
-M1.1 — Attitude Frame Correctness
+M1.5 — Replay UX and Inspection Polish
 ```
 
 The primary supported format is the canonical
@@ -67,6 +67,13 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
   ``q_body_to_viewer`` at decode time.
 - Renderer receives viewer-frame quaternions and only performs
   backend ordering conversion (``[w, x, y, z] → [x, y, z, w]``).
+- Per-body trajectory cache built once on timeline load, so trail
+  updates during playback / scrubbing become O(1) array slices.
+- Trail display modes: hidden, up to current frame, or full
+  trajectory — switchable from **View → Trails**.
+- Scene-bounds-driven ground grid (``GridSpec``) — the grid scales
+  with the loaded log instead of a fixed ±100 m.
+- Screenshot export to PNG via **File → Save Screenshot…**.
 - Auto-fit camera (`Frame All`) and `Reset Camera` actions.
 - Selected-body telemetry display, including step index, altitude (m),
   and source format.
@@ -374,6 +381,8 @@ mlc-cinema/
         attitude.py
         bounds.py
         camera.py
+        trajectory.py
+        grid.py
 
       render/
         viewport.py
@@ -399,6 +408,8 @@ mlc-cinema/
     test_attitude.py
     test_scene_bounds.py
     test_camera.py
+    test_trajectory.py
+    test_grid.py
 ```
 
 ---
@@ -597,28 +608,28 @@ sends NED north→viewer +Y, NED east→viewer +X, NED down→viewer −Z).
 Status:
 
 ```text
-Planned
+Implemented
 ```
 
-Goal:
+Focus:
 
-```text
-Smoother, more inspectable replay for long high-rate logs.
-```
+- Per-body trajectory caching (``scene/trajectory.py``) — trails are
+  now ``np.searchsorted``-sliced from cached ``(N, 3)`` arrays rather
+  than rebuilt by walking the timeline every frame.
+- Trail visibility / mode controls (**View → Trails**): hidden,
+  up to current frame, full trajectory.
+- Scene-bounds-driven grid sizing (``scene/grid.py``) — ``GridSpec``
+  picks a 1/2/5×10ⁿ step targeting ~10 lines per half-axis and
+  rebuilds the pygfx grid on each new timeline.
+- Screenshot export to PNG (**File → Save Screenshot…**) — Qt
+  ``widget.grab()`` with a graceful "unsupported backend" dialog if
+  the wgpu surface can't be captured on the host.
+- README repository tree caught up.
 
-Possible work items:
-
-- **Per-body trajectory caching.** Today the pygfx renderer rebuilds
-  trail point lists from `timeline.frames[0..frame_index]` on every
-  `set_scene_frame` call. For a 30 s / 100 Hz log that's 3000 list
-  copies per frame change while playing. Cache `(N, 3)` numpy arrays
-  per body once in `set_timeline()`, then on each frame slice the
-  cached array.
-- Optional pan camera control + `Shift`-drag mapping.
-- "Show full trail / trail up to current frame" toggle.
-- Screenshot export to PNG.
-- Smarter grid step sizing from `SceneBounds`.
-- Mouse-hover entity picking → telemetry panel.
+Camera pan was deferred — the orbit/zoom controller is stable and
+forcing pan in would risk regressing it. ``OrbitController`` already
+ships with mouse-wheel zoom and right-drag rotation; pan can land in
+a follow-up if it stays low risk.
 
 ---
 
@@ -706,24 +717,22 @@ Possible features:
 
 ## Near-Term Priority
 
-The current version is M1.1 (frame-correct attitude). The recommended
-next steps, in order, are:
+The current version is M1.5 (trajectory cache, trail controls, scene-
+sized grid, screenshot export). The recommended next steps, in
+order, are:
 
 ```text
-M1.5 — Replay UX and Inspection Polish
 M2.0 — Rocket Visualization Layer
+M3.0 — RL Episode Analysis
 ```
 
-M1.5 is a polish milestone: cache per-body trajectory arrays so trail
-recomputation stays cheap for long high-rate logs, plus assorted
-inspection-experience improvements.
+M2.0 introduces rocket-specific overlays (thrust vector, attitude
+indicator, throttle flame, propellant gauge, landing-pad markers)
+on top of the now-frame-correct, smoothly-replayed scene.
 
-After M1.5, M2.0 can introduce rocket-specific overlays (thrust
-vector, attitude indicator, throttle flame, propellant gauge,
-landing-pad markers) on top of the now-frame-correct replay.
-
-Do not rush into simulator-specific features too early. First make
-the generic MLC replay experience solid; M1.1 made it frame-correct.
+M3.0 brings reward / action / event records to life: reward plots,
+action vector readouts, terminal-reason and constraint-violation
+markers along the timeline.
 
 ---
 
@@ -752,17 +761,17 @@ license string.
 ## Status Summary
 
 ```text
-Current milestone: M1.1
-Current role: MLC v1 desktop 3D replay viewer with frame-correct attitude
+Current milestone: M1.5
+Current role: MLC v1 desktop 3D replay viewer with smoother inspection UX
 Current maturity: early but useful engineering visualizer
 Primary value:
   - consumes canonical MLC v1
   - validates logs (mlc-cinema-validate)
   - replays multi-body motion in 3D
   - converts position, velocity, and attitude into Cinema viewer frame
-  - provides telemetry and trajectory inspection
+  - provides efficient trajectory trails and telemetry inspection
 Next milestone:
-  M1.5 — replay UX polish
-Then:
   M2.0 — rocket visualization layer
+Then:
+  M3.0 — RL episode analysis
 ```

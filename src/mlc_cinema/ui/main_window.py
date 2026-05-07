@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
@@ -136,6 +137,11 @@ class MainWindow(QMainWindow):
         file_menu.addAction(open_act)
 
         file_menu.addSeparator()
+        save_screenshot_act = QAction("Save &Screenshot...", self)
+        save_screenshot_act.triggered.connect(self._on_save_screenshot)
+        file_menu.addAction(save_screenshot_act)
+
+        file_menu.addSeparator()
         quit_act = QAction("E&xit", self)
         quit_act.setShortcut(QKeySequence.Quit)
         quit_act.triggered.connect(self.close)
@@ -156,6 +162,37 @@ class MainWindow(QMainWindow):
         frame_all_act.setShortcut("F")
         frame_all_act.triggered.connect(self._on_frame_all)
         view_menu.addAction(frame_all_act)
+
+        # --- Trails submenu ---
+        view_menu.addSeparator()
+        trails_menu = view_menu.addMenu("&Trails")
+
+        self._show_trails_act = QAction("&Show Trails", self)
+        self._show_trails_act.setCheckable(True)
+        self._show_trails_act.setChecked(True)
+        self._show_trails_act.toggled.connect(self._on_show_trails_toggled)
+        trails_menu.addAction(self._show_trails_act)
+
+        trails_menu.addSeparator()
+        self._trail_mode_group = QActionGroup(self)
+        self._trail_mode_group.setExclusive(True)
+
+        self._trail_to_current_act = QAction("Trail &Up To Current Frame", self)
+        self._trail_to_current_act.setCheckable(True)
+        self._trail_to_current_act.setChecked(True)
+        self._trail_mode_group.addAction(self._trail_to_current_act)
+        self._trail_to_current_act.toggled.connect(
+            lambda checked: checked and self._set_trail_mode("to_current")
+        )
+        trails_menu.addAction(self._trail_to_current_act)
+
+        self._trail_full_act = QAction("&Full Trail", self)
+        self._trail_full_act.setCheckable(True)
+        self._trail_mode_group.addAction(self._trail_full_act)
+        self._trail_full_act.toggled.connect(
+            lambda checked: checked and self._set_trail_mode("full")
+        )
+        trails_menu.addAction(self._trail_full_act)
 
         playback_menu = bar.addMenu("&Playback")
         play_act = QAction("&Play / Pause", self)
@@ -296,6 +333,32 @@ class MainWindow(QMainWindow):
 
     def _on_frame_all(self) -> None:
         self._viewport.frame_all()
+
+    def _on_show_trails_toggled(self, checked: bool) -> None:
+        self._viewport.set_trails_visible(bool(checked))
+
+    def _set_trail_mode(self, mode: str) -> None:
+        self._viewport.set_trail_mode(mode)
+
+    def _on_save_screenshot(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Screenshot",
+            "mlc_cinema_screenshot.png",
+            "PNG (*.png);;All files (*)",
+        )
+        if not path:
+            return
+        ok = self._viewport.save_screenshot(path)
+        if ok:
+            self.statusBar().showMessage(f"Saved screenshot: {path}")
+        else:
+            QMessageBox.warning(
+                self,
+                "Screenshot",
+                "Screenshot export is not available for the active "
+                "viewport backend.",
+            )
 
     def _on_play_toggled(self) -> None:
         if self._controller is None:

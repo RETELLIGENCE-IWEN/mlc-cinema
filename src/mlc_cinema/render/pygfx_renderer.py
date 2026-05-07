@@ -46,7 +46,14 @@ from mlc_cinema.mlc.timeline import MLCTimeline
 from mlc_cinema.scene.bounds import SceneBounds, compute_timeline_bounds
 from mlc_cinema.scene.camera import frame_bounds, orbit_camera_position
 from mlc_cinema.scene.entities import SceneEntity
+from mlc_cinema.scene.grid import GridSpec, grid_spec_from_bounds
 from mlc_cinema.scene.scene_model import SceneFrame
+from mlc_cinema.scene.trajectory import (
+    TrajectoryCache,
+    build_trajectory_cache,
+    full_trajectory_points,
+    trajectory_points_up_to_frame,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -71,6 +78,16 @@ _FALLBACK_PALETTE: tuple[tuple[float, float, float], ...] = (
 # 30-second / 100 Hz log; longer logs will see trails truncated to the
 # most recent 8192 samples.
 _TRAIL_BUFFER_LEN: int = 8192
+
+
+# Trail display modes. Strings are used over an enum for cheap
+# round-tripping through the UI / settings.
+TRAIL_MODE_HIDDEN: str = "hidden"
+TRAIL_MODE_TO_CURRENT: str = "to_current"
+TRAIL_MODE_FULL: str = "full"
+_VALID_TRAIL_MODES: frozenset[str] = frozenset(
+    {TRAIL_MODE_HIDDEN, TRAIL_MODE_TO_CURRENT, TRAIL_MODE_FULL}
+)
 
 
 def is_available() -> bool:
@@ -145,12 +162,11 @@ class PygfxViewport(QWidget):
             self._camera, register_events=self._renderer
         )
 
-        # Helper objects: ground grid + world axes.
-        self._helpers_group = gfx.Group()
-        self._helpers_group.add(_build_axes(length=10.0))
-        for line in _build_grid_lines(half_size=100.0, step=10.0):
-            self._helpers_group.add(line)
-        self._scene.add(self._helpers_group)
+        # Helper objects: ground grid + world axes (rebuildable when
+        # the timeline changes so the grid scales with scene bounds).
+        self._helpers_group: Any = None
+        self._current_grid_spec: GridSpec = GridSpec(half_size=100.0, step=10.0)
+        self._rebuild_helpers(self._current_grid_spec)
 
         # Per-body state.
         self._entities: dict[int, SceneEntity] = {}
@@ -160,6 +176,11 @@ class PygfxViewport(QWidget):
         self._frame_index: int = 0
         self._selected_body_id: int | None = None
         self._bounds: SceneBounds | None = None
+
+        # Trajectory cache (built once on set_timeline) + trail display state.
+        self._trajectory_cache: TrajectoryCache | None = None
+        self._trail_mode: str = TRAIL_MODE_TO_CURRENT
+        self._trails_visible: bool = True
 
         self._canvas.request_draw(self._draw)
 
@@ -191,8 +212,12 @@ class PygfxViewport(QWidget):
         self._timeline = timeline
         if timeline is not None and timeline.frames:
             self._bounds = compute_timeline_bounds(timeline)
+            self._trajectory_cache = build_trajectory_cache(timeline)
+            # Rebuild the ground grid + axes so they scale with the scene.
+            self._rebuild_helpers(grid_spec_from_bounds(self._bounds))
         else:
             self._bounds = None
+            self._trajectory_cache = None
         self._request_redraw()
 
     def set_scene_frame(
@@ -256,6 +281,47 @@ class PygfxViewport(QWidget):
             _zero_trail(trail)
         self._request_redraw()
 
+    def set_trail_mode(self, mode: str) -> None:
+        """Switch between ``"hidden"`` / ``"to_current"`` / ``"full"``."""
+
+        if mode not in _VALID_TRAIL_MODES:
+            _log.warning("Unknown trail mode %r; ignoring", mode)
+            return
+        if mode == self._trail_mode:
+            return
+        self._trail_mode = mode
+        self._refresh_trails()
+        self._request_redraw()
+
+    def set_trails_visible(self, visible: bool) -> None:
+        if bool(visible) == self._trails_visible:
+            return
+        self._trails_visible = bool(visible)
+        self._refresh_trails()
+        self._request_redraw()
+
+    def save_screenshot(self, path: str | "Path") -> bool:  # noqa: F821
+        """Save the current viewport as a PNG.
+
+        Uses Qt's ``widget.grab()`` against the canvas. On some
+        platforms a wgpu surface may not be visible to that path; the
+        method returns ``False`` (with a warning) rather than raising
+        so the UI can show a clean status to the user.
+        """
+
+        try:
+            pixmap = self._canvas.grab() if hasattr(self._canvas, "grab") else self.grab()
+            if pixmap is None or pixmap.isNull():
+                _log.warning("Screenshot grab returned an empty pixmap")
+                return False
+            ok = bool(pixmap.save(str(path), "PNG"))
+            if not ok:
+                _log.warning("QPixmap.save returned False for %s", path)
+            return ok
+        except Exception:  # pragma: no cover
+            _log.exception("Screenshot save failed")
+            return False
+
     # ----- internals -----------------------------------------------------
 
     def _draw(self) -> None:
@@ -276,16 +342,48 @@ class PygfxViewport(QWidget):
         except Exception:
             pass
 
+    def _rebuild_helpers(self, spec: GridSpec) -> None:
+        """Rebuild the ground grid + axes group from a fresh ``GridSpec``.
+
+        Called once at construction with a default spec, and again
+        each time ``set_timeline`` recomputes scene bounds. Avoiding
+        per-frame rebuilds is important — the grid is a static asset.
+        """
+
+        if self._helpers_group is not None:
+            self._safe_remove(self._helpers_group)
+        group = gfx.Group()
+        # Axes scale with the grid step so they don't overwhelm tiny
+        # scenes and aren't invisible in huge ones.
+        axes_length = max(spec.step * 2.0, 5.0)
+        group.add(_build_axes(length=axes_length))
+        for line in _build_grid_lines(
+            half_size=spec.half_size, step=spec.step
+        ):
+            group.add(line)
+        self._scene.add(group)
+        self._helpers_group = group
+        self._current_grid_spec = spec
+
     def _refresh_trails(self) -> None:
-        if self._timeline is None:
+        cache = self._trajectory_cache
+        if cache is None:
             return
-        end = max(0, min(self._frame_index + 1, len(self._timeline.frames)))
+
         for body_id, trail in self._trails.items():
-            pts: list[np.ndarray] = []
-            for i in range(end):
-                state = self._timeline.frames[i].states_by_body.get(body_id)
-                if state is not None:
-                    pts.append(state.position)
+            trajectory = cache.trajectories.get(body_id)
+            if trajectory is None:
+                _zero_trail(trail)
+                continue
+            if not self._trails_visible or self._trail_mode == TRAIL_MODE_HIDDEN:
+                _zero_trail(trail)
+                continue
+            if self._trail_mode == TRAIL_MODE_FULL:
+                pts = full_trajectory_points(trajectory)
+            else:
+                pts = trajectory_points_up_to_frame(
+                    trajectory, self._frame_index
+                )
             _write_trail(trail, pts)
 
     def _update_selection_visuals(self) -> None:
@@ -383,25 +481,35 @@ def _build_grid_lines(half_size: float, step: float) -> list[Any]:
     return lines
 
 
-def _write_trail(trail: Any, pts: list[np.ndarray]) -> None:
-    """Write a list of viewer-frame points into a pre-allocated trail buffer."""
+def _write_trail(trail: Any, pts: Any) -> None:
+    """Write viewer-frame points into a pre-allocated trail buffer.
+
+    ``pts`` may be either an ``(N, 3)`` numpy array (preferred — no
+    copy in the hot path) or any sequence convertible by
+    ``np.asarray``. An empty input zeroes the buffer.
+    """
 
     try:
         buf = trail.geometry.positions
         data = buf.data
         capacity = len(data)
-        if not pts:
+
+        # Empty case (handles both empty list and (0, 3) array).
+        n_in = len(pts) if pts is not None else 0
+        if n_in == 0:
             data[:] = 0.0
             buf.update_range(0, capacity)
             return
+
         arr = np.asarray(pts, dtype=np.float32)
-        # If we have more points than buffer slots, keep the most recent.
-        if len(arr) > capacity:
+        if arr.ndim != 2 or arr.shape[1] != 3:
+            arr = arr.reshape(-1, 3)
+        if arr.shape[0] > capacity:
             arr = arr[-capacity:]
-        n = len(arr)
+        n = arr.shape[0]
         data[:n] = arr
         # Pad the unused tail with the last point so the line doesn't
-        # snap back to the origin.
+        # snap back to the origin between renders.
         if n < capacity:
             data[n:] = arr[-1]
         buf.update_range(0, capacity)
