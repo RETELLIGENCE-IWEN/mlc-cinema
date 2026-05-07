@@ -119,7 +119,10 @@ The project currently depends on:
 - `PySide6`
 - `pygfx`
 - `wgpu`
-- `rendercanvas` (newer wgpu releases ship Qt canvas integration here)
+- `rendercanvas`
+
+`rendercanvas` is used by newer `wgpu` / `pygfx` stacks for Qt canvas
+integration.
 
 The viewport stays usable even if the hardware-accelerated renderer
 is unavailable: the dispatcher falls back to a simpler Qt-painted 2D
@@ -626,7 +629,7 @@ Possible work items:
 
 ---
 
-### M2 — Rocket Visualization Layer
+### M2.0 — Rocket Visualization Layer
 
 Goal:
 
@@ -767,7 +770,8 @@ Primary value:
   - replays multi-body motion in 3D
   - provides telemetry and trajectory inspection
 Next milestone:
+  M1.1 — attitude frame correctness
+Then:
   M1.5 — replay UX polish
-  or
   M2.0 — rocket visualization layer
 ```

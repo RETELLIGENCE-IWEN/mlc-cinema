@@ -15,6 +15,7 @@ dependencies = [
   "PySide6",
   "pygfx",
   "wgpu",
+  "rendercanvas",
 ]
 
 [project.optional-dependencies]
