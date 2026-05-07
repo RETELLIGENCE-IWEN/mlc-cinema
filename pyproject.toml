@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 mlc-cinema = "mlc_cinema.app:main"
+mlc-cinema-validate = "mlc_cinema.cli_validate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

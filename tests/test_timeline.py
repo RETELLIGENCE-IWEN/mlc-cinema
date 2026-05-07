@@ -131,3 +131,38 @@ def test_floating_point_close_timestamps_group_together() -> None:
     timeline = build_timeline(_result_with(states, bodies))
     assert len(timeline.frames) == 1
     assert set(timeline.frames[0].states_by_body) == {0, 1}
+
+
+# --- M0.6: timelines built from real example logs --------------------------
+
+from pathlib import Path  # noqa: E402
+
+from mlc_cinema.mlc.reader import read_mlc_ndjson  # noqa: E402
+
+_EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "logs"
+
+
+def test_timeline_groups_multiple_bodies_same_step() -> None:
+    parse = read_mlc_ndjson(_EXAMPLES / "multibody_demo_v1.mlc.ndjson")
+    timeline = build_timeline(parse)
+    assert len(timeline.frames) == 4
+    for frame in timeline.frames:
+        assert set(frame.states_by_body.keys()) == {0, 1}
+
+
+def test_timeline_duration_for_multibody_log() -> None:
+    parse = read_mlc_ndjson(_EXAMPLES / "multibody_demo_v1.mlc.ndjson")
+    timeline = build_timeline(parse)
+    assert timeline.start_time_s == 0.0
+    assert timeline.end_time_s == 1.5
+    assert timeline.duration_s == pytest.approx(1.5)
+
+
+def test_nearest_frame_for_mlc_v1_log() -> None:
+    parse = read_mlc_ndjson(_EXAMPLES / "minimal_demo_v1.mlc.ndjson")
+    timeline = build_timeline(parse)
+    # Step times in the demo: 0.0, 0.5, 1.0, 1.5, 2.0.
+    assert timeline.nearest_frame(0.4).t == 0.5
+    assert timeline.nearest_frame(0.49).t == 0.5
+    assert timeline.nearest_frame(0.6).t == 0.5
+    assert timeline.nearest_frame(2.5).t == 2.0  # clamps to end

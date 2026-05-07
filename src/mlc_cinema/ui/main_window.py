@@ -48,7 +48,7 @@ from mlc_cinema.mlc.timeline import (
 )
 from mlc_cinema.mlc.validate import warn_on_suspicious_content
 from mlc_cinema.playback.controller import PlaybackController
-from mlc_cinema.render.viewport import MLCViewport
+from mlc_cinema.render.viewport import create_viewport
 from mlc_cinema.scene.entities import SceneEntity
 from mlc_cinema.scene.scene_model import (
     SceneBodyState,
@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         # --- viewport (central) ---
-        self._viewport = MLCViewport(self)
+        self._viewport = create_viewport(self)
         self.setCentralWidget(self._viewport)
 
         # --- entity tree (left dock) ---
@@ -145,6 +145,17 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._entity_dock.toggleViewAction())
         view_menu.addAction(self._telemetry_dock.toggleViewAction())
         view_menu.addAction(self._timeline_dock.toggleViewAction())
+        view_menu.addSeparator()
+
+        reset_cam_act = QAction("&Reset Camera", self)
+        reset_cam_act.setShortcut("R")
+        reset_cam_act.triggered.connect(self._on_reset_camera)
+        view_menu.addAction(reset_cam_act)
+
+        frame_all_act = QAction("&Frame All", self)
+        frame_all_act.setShortcut("F")
+        frame_all_act.triggered.connect(self._on_frame_all)
+        view_menu.addAction(frame_all_act)
 
         playback_menu = bar.addMenu("&Playback")
         play_act = QAction("&Play / Pause", self)
@@ -217,19 +228,11 @@ class MainWindow(QMainWindow):
         self._timeline = timeline
         self._entities = scene_entities_from_bodies(timeline.bodies)
 
-        # Bodies that appear only in state records (and not in body
-        # records) still need a renderable entity.
-        state_only_ids = {
-            bid for f in timeline.frames for bid in f.states_by_body
-        } - set(self._entities.keys())
-        for bid in state_only_ids:
-            self._entities[bid] = SceneEntity(
-                body_id=bid, name=f"body_{bid}"
-            )
-
         self._entity_tree.populate(self._entities)
         self._viewport.set_entities(self._entities)
+        self._viewport.set_timeline(timeline)
         self._viewport.reset_trails()
+        self._viewport.frame_all()
 
         self._controller = PlaybackController(
             timeline, parent=self, speed=self._playback_speed
@@ -261,7 +264,9 @@ class MainWindow(QMainWindow):
         timeline_frame = self._controller.current_frame()
         scene_frame = scene_frame_from_timeline_frame(timeline_frame)
 
-        self._viewport.set_scene_frame(scene_frame)
+        # Pass the frame index so the viewport can recompute trails
+        # from the timeline up to this frame (handles backward scrub).
+        self._viewport.set_scene_frame(scene_frame, frame_index=index)
         self._timeline_widget.set_frame(index, t)
         self._update_telemetry_for_frame(scene_frame)
 
@@ -280,10 +285,17 @@ class MainWindow(QMainWindow):
         self._selected_body_id = body_id
         ent = self._entities.get(body_id)
         self._telemetry.set_entity(ent)
+        self._viewport.set_selected_body(body_id)
         if self._controller is not None:
             timeline_frame = self._controller.current_frame()
             scene_frame = scene_frame_from_timeline_frame(timeline_frame)
             self._update_telemetry_for_frame(scene_frame)
+
+    def _on_reset_camera(self) -> None:
+        self._viewport.reset_camera()
+
+    def _on_frame_all(self) -> None:
+        self._viewport.frame_all()
 
     def _on_play_toggled(self) -> None:
         if self._controller is None:
@@ -303,15 +315,10 @@ class MainWindow(QMainWindow):
         # Scrubbing while playing pauses; consistent with most replay tools.
         if self._controller.is_playing:
             self._controller.pause()
-        # Scrubbing back to (or past) the start should clear stale trails
-        # rather than painting an arc through "history that hasn't happened".
-        if index < self._controller.frame_index:
-            self._viewport.reset_trails()
-            self._controller.set_frame_index(index)
-            # After reset we need to repaint trails forward; replay frames 0..index.
-            self._replay_to_index(index)
-        else:
-            self._controller.set_frame_index(index)
+        # The viewport recomputes its trail from the timeline on every
+        # ``set_scene_frame(frame_index=...)`` call, so a backward scrub
+        # just needs a normal frame change — no replay loop needed.
+        self._controller.set_frame_index(index)
 
     def _on_step_back(self) -> None:
         if self._controller is None:
@@ -384,17 +391,3 @@ class MainWindow(QMainWindow):
             self._selected_body_id
         )
         self._telemetry.update_state(scene_frame.t, body_state)
-
-    def _replay_to_index(self, target_index: int) -> None:
-        """Re-feed the viewport every frame from 0..target_index after a backward scrub.
-
-        This rebuilds the trail so it matches the new history rather
-        than leaving the old (now-future) trail visible.
-        """
-
-        if self._timeline is None:
-            return
-        target_index = max(0, min(target_index, len(self._timeline.frames) - 1))
-        for i in range(0, target_index + 1):
-            tf = self._timeline.frame_at_index(i)
-            self._viewport.set_scene_frame(scene_frame_from_timeline_frame(tf))

@@ -1,12 +1,13 @@
 """Rendering layer for mlc-cinema.
 
 The renderer consumes ``SceneEntity`` and ``SceneFrame`` only; it does
-not import from ``mlc_cinema.mlc`` directly. ``MLCViewport`` is the
-public widget — it currently uses a Qt-painted side-view placeholder
-and exposes a stable interface so a hardware-accelerated backend
-(``pygfx_renderer``) can drop in later without UI changes.
+not import from ``mlc_cinema.mlc`` directly. The viewport widget is
+backend-pluggable: ``pygfx_renderer.PygfxViewport`` for the real 3D
+backend, ``fallback_viewport.FallbackViewport`` for hosts where
+pygfx + wgpu are unavailable. Use :func:`create_viewport` to get the
+best one.
 """
 
-from mlc_cinema.render.viewport import MLCViewport
+from mlc_cinema.render.viewport import MLCViewport, create_viewport
 
-__all__ = ["MLCViewport"]
+__all__ = ["MLCViewport", "create_viewport"]

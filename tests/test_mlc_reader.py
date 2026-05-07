@@ -14,16 +14,23 @@ from mlc_cinema.mlc.reader import read_mlc_ndjson
 from mlc_cinema.mlc.records import MLCParseError
 
 
-EXAMPLE_V1 = (
-    Path(__file__).resolve().parents[1]
-    / "examples"
-    / "logs"
-    / "minimal_demo_v1.mlc.ndjson"
-)
+_EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "logs"
+EXAMPLE_V1 = _EXAMPLES / "minimal_demo_v1.mlc.ndjson"
+EXAMPLE_MULTIBODY = _EXAMPLES / "multibody_demo_v1.mlc.ndjson"
+EXAMPLE_ARE = _EXAMPLES / "action_reward_event_demo_v1.mlc.ndjson"
 
 
 def _zeros28() -> list[float]:
     return [0.0] * MLC_V1_STATE_LEN
+
+
+def _write_log(tmp_path: Path, name: str, records: list[dict]) -> Path:
+    p = tmp_path / name
+    p.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n",
+        encoding="utf-8",
+    )
+    return p
 
 
 # --- example file ----------------------------------------------------------
@@ -266,3 +273,217 @@ def test_skips_blank_lines(tmp_path: Path) -> None:
     result = read_mlc_ndjson(log)
     assert result.header is not None
     assert len(result.states) == 1
+
+
+# --- M0.6 hardening -------------------------------------------------------
+
+def test_reader_parses_multibody_mlc_v1() -> None:
+    result = read_mlc_ndjson(EXAMPLE_MULTIBODY)
+    assert set(result.bodies.keys()) == {0, 1}
+    assert result.bodies[0].platform == "rocket"
+    assert result.bodies[1].platform == "quadcopter"
+    assert len(result.steps) == 4
+    assert len(result.states) == 8  # 2 bodies * 4 steps
+    # Both bodies are present at the first step.
+    s0_states = [s for s in result.states if s.t == 0.0]
+    assert {s.body_id for s in s0_states} == {0, 1}
+
+
+def test_reader_parses_action_reward_event_demo() -> None:
+    result = read_mlc_ndjson(EXAMPLE_ARE)
+    assert len(result.action_specs) == 1
+    assert len(result.reward_specs) == 1
+    assert len(result.action_samples) == 4
+    assert len(result.reward_samples) == 4
+    assert len(result.events) == 2
+    topics = sorted(e.topic for e in result.events)
+    assert topics == ["engine_ignite", "max_q"]
+
+
+def test_reader_validates_action_sample_length(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "bad_action_len.mlc.ndjson",
+        [
+            {"$": "header", "format": 1, "label": "bad"},
+            {"$": "body", "id": 0, "name": "body_0"},
+            {"$": "action_spec", "id": 0, "b": 0, "fields": ["a0", "a1"]},
+            {"$": "step", "s": 0, "t": 0.0},
+            {"a": 0, "x": [1.0]},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="action sample x length"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_validates_reward_sample_length(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "bad_reward_len.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {
+                "$": "reward_spec",
+                "id": 0,
+                "b": 0,
+                "fields": ["step_reward", "fuel"],
+            },
+            {"$": "step", "s": 0, "t": 0.0},
+            {"r": 0, "x": [0.5]},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="reward sample x length"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_unknown_action_spec_id(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "unknown_action_spec.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {"$": "step", "s": 0, "t": 0.0},
+            {"a": 99, "x": [1.0, 2.0]},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="unknown action_spec id"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_unknown_reward_spec_id(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "unknown_reward_spec.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {"$": "step", "s": 0, "t": 0.0},
+            {"r": 7, "x": [0.5]},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="unknown reward_spec id"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_duplicate_body_id(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "dup_body.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "first"},
+            {"$": "body", "id": 0, "name": "second"},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="duplicate body id"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_duplicate_step_index(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "dup_step.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {"$": "step", "s": 0, "t": 0.0},
+            {"b": 0, "x": _zeros28()},
+            {"$": "step", "s": 0, "t": 0.5},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="duplicate step index"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_step_index_going_backwards(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "back_step.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {"$": "step", "s": 5, "t": 0.0},
+            {"$": "step", "s": 3, "t": 0.5},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="step index went backwards"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_step_time_going_backwards(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "back_time.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {"$": "step", "s": 0, "t": 1.0},
+            {"$": "step", "s": 1, "t": 0.5},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="step time went backwards"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_state_for_unknown_body_id(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "state_unknown_body.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "step", "s": 0, "t": 0.0},
+            {"b": 0, "x": _zeros28()},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="undeclared body id 0"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_duplicate_header(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "dup_header.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "header", "format": 1},
+        ],
+    )
+    with pytest.raises(MLCParseError, match="duplicate header"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_rejects_non_v1_format(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        "format2.mlc.ndjson",
+        [{"$": "header", "format": 2}],
+    )
+    with pytest.raises(MLCParseError, match="'format' must be 1"):
+        read_mlc_ndjson(log)
+
+
+def test_reader_warns_on_non_step_reward_first_field(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log = _write_log(
+        tmp_path,
+        "weird_reward.mlc.ndjson",
+        [
+            {"$": "header", "format": 1},
+            {"$": "body", "id": 0, "name": "b"},
+            {
+                "$": "reward_spec",
+                "id": 0,
+                "b": 0,
+                "fields": ["something_else", "fuel"],
+            },
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger="mlc_cinema.mlc.reader"):
+        read_mlc_ndjson(log)
+    assert any(
+        "fields[0] should be 'step_reward'" in r.getMessage()
+        for r in caplog.records
+    )

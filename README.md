@@ -17,7 +17,7 @@ The long-term goal is larger:
 `mlc-cinema` is currently at:
 
 ```text
-M0.5 — Aligned with Maneuver Log Contract v1
+M1.0 — Real 3D viewport
 ```
 
 The primary supported format is the canonical
@@ -45,30 +45,34 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
 
 ---
 
-## What Works in M0.5
+## What Works
 
-M0.5 currently supports:
+`mlc-cinema` currently supports:
 
 - Loading canonical MLC v1 `.mlc.ndjson` files.
 - Parsing typed records: `header`, `body`, `step`, `action_spec`,
   `reward_spec`, `event`.
 - Parsing step-scoped compact rows: `{"b":..., "x":[...28 values...]}`,
   `{"a":..., "x":[...]}`, `{"r":..., "x":[...]}`.
+- Reader hardening: rejects non-v1 format, duplicates, monotonicity
+  violations, unknown body / spec ids, length mismatches.
 - Decoding the 28-element fundamental maneuver state vector and
   converting NED to viewer-frame coordinates.
-- Building a frame timeline indexed by step time.
-- Displaying declared bodies/entities.
-- Replaying body positions over time.
-- Play / pause timeline control.
-- Timeline scrubbing.
+- Multi-body timeline replay.
+- `mlc-cinema-validate` CLI for headless smoke tests.
+- Real 3D viewport (pygfx + wgpu) with orbit camera, zoom, ground grid,
+  world axes, body primitives, trajectory trails, and selected-body
+  highlighting.
+- Auto-fit camera (`Frame All`) and `Reset Camera` actions.
 - Selected-body telemetry display, including step index, altitude (m),
   and source format.
-- Basic renderer/viewport separation.
-- Unknown typed records handled without crashing.
+- Drag-and-drop opening from a file explorer.
+- Playback speed multiplier (0.001× – 1000×, wall-clock paced).
+- Qt-painted fallback viewport when pygfx + wgpu are unavailable.
 
 ---
 
-## What M0.5 Is Not Yet
+## What is Not Yet Implemented
 
 M0.5 does **not** yet implement:
 
@@ -125,11 +129,42 @@ Run the included minimal MLC v1 example log:
 mlc-cinema examples/logs/minimal_demo_v1.mlc.ndjson
 ```
 
+Other bundled example logs:
+
+```bash
+mlc-cinema examples/logs/multibody_demo_v1.mlc.ndjson
+mlc-cinema examples/logs/action_reward_event_demo_v1.mlc.ndjson
+```
+
 Equivalent module form:
 
 ```bash
 python -m mlc_cinema.app examples/logs/minimal_demo_v1.mlc.ndjson
 ```
+
+---
+
+## Validation
+
+Validate an MLC v1 file without opening the GUI:
+
+```bash
+mlc-cinema-validate examples/logs/minimal_demo_v1.mlc.ndjson
+```
+
+Exits with code `0` on success, `1` on a parse or timeline error. The
+report includes the header, record counts, timeline duration, and
+declared bodies. Suitable for CI smoke-testing external MLC producers.
+
+Compatibility:
+
+| Source | Status |
+|---|---|
+| maneuver-log-contract v1 examples | Supported |
+| mlc-cinema minimal v1 demo | Supported |
+| multibody MLC v1 logs | Supported |
+| action/reward/event records | Parsed and validated, not yet visualized |
+| legacy `"$":"state"` demo format | Removed |
 
 You can also launch the app without an argument:
 
@@ -304,10 +339,13 @@ mlc-cinema/
   examples/
     logs/
       minimal_demo_v1.mlc.ndjson
+      multibody_demo_v1.mlc.ndjson
+      action_reward_event_demo_v1.mlc.ndjson
 
   src/
     mlc_cinema/
       app.py
+      cli_validate.py
       config.py
 
       mlc/
@@ -316,15 +354,19 @@ mlc-cinema/
         timeline.py
         validate.py
         mlc_v1.py
+        summary.py
 
       scene/
         entities.py
         scene_model.py
         transforms.py
+        bounds.py
+        camera.py
 
       render/
         viewport.py
         pygfx_renderer.py
+        fallback_viewport.py
         primitives.py
 
       ui/
@@ -458,7 +500,53 @@ Focus:
 
 ---
 
-### M1 — Real 3D Viewport
+### M0.6 — MLC v1 Robustness and Ecosystem Smoke Test
+
+Status:
+
+```text
+Implemented
+```
+
+Focus:
+
+- Stricter reader validation (duplicate ids, monotonic steps,
+  unknown spec ids, body/sample length checks).
+- Multibody timeline grouping verified by example logs and tests.
+- `mlc-cinema-validate` CLI for headless validation.
+- `mlc/summary.py` parse summary suitable for CI reports.
+- Additional example logs (multibody, action / reward / event).
+
+---
+
+### M1.0 — Real 3D Viewport
+
+Status:
+
+```text
+Implemented
+```
+
+Focus:
+
+- pygfx + wgpu 3D viewport with ground grid, world axes,
+  per-platform body primitives, and trajectory trails.
+- Orbit camera with mouse interaction.
+- Auto-fit camera from scene bounds (`scene/bounds.py`).
+- Renderer-agnostic camera state (`scene/camera.py`).
+- Backward-scrub trail recomputation handled inside the viewport.
+- Selected-body highlighting.
+- Qt-painted fallback when pygfx is unavailable on the host.
+
+Recommended next milestone:
+
+```text
+M1.5 — Replay UX and inspection polish
+```
+
+---
+
+### M1 — Real 3D Viewport (umbrella)
 
 Goal:
 
@@ -622,9 +710,16 @@ Apache-2.0
 ## Status Summary
 
 ```text
-Current milestone: M0.5
-Current role: MLC v1 desktop replay skeleton
-Current maturity: early prototype
-Primary value: proves the replay architecture against canonical MLC v1
-Next milestone: real 3D viewport and camera controls
+Current milestone: M1.0
+Current role: MLC v1 desktop 3D replay viewer
+Current maturity: early but useful engineering visualizer
+Primary value:
+  - consumes canonical MLC v1
+  - validates logs (mlc-cinema-validate)
+  - replays multi-body motion in 3D
+  - provides telemetry and trajectory inspection
+Next milestone:
+  M1.5 — replay UX polish
+  or
+  M2.0 — rocket visualization layer
 ```

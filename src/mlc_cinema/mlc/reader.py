@@ -99,16 +99,46 @@ def read_mlc_ndjson(path: str | Path) -> MLCParseResult:
                     state = decode_mlc_v1_body_state(
                         rec, current_step, location=location
                     )
+                    if state.body_id not in bodies:
+                        raise MLCParseError(
+                            f"{location}body state references undeclared "
+                            f"body id {state.body_id}; emit a $=body record "
+                            f"before any sample for that body"
+                        )
                     states.append(state)
                     saw_compact_v1 = True
                 elif "a" in rec and "x" in rec:
-                    action_samples.append(
-                        _decode_action_sample(rec, current_step, location)
-                    )
+                    sample = _decode_action_sample(rec, current_step, location)
+                    spec = action_specs.get(sample.spec_id)
+                    if spec is None:
+                        raise MLCParseError(
+                            f"{location}action sample references unknown "
+                            f"action_spec id {sample.spec_id}"
+                        )
+                    if len(spec.fields) and len(sample.values) != len(spec.fields):
+                        raise MLCParseError(
+                            f"{location}action sample x length "
+                            f"{len(sample.values)} does not match "
+                            f"action_spec[{sample.spec_id}].fields length "
+                            f"{len(spec.fields)}"
+                        )
+                    action_samples.append(sample)
                 elif "r" in rec and "x" in rec:
-                    reward_samples.append(
-                        _decode_reward_sample(rec, current_step, location)
-                    )
+                    sample = _decode_reward_sample(rec, current_step, location)
+                    spec = reward_specs.get(sample.spec_id)
+                    if spec is None:
+                        raise MLCParseError(
+                            f"{location}reward sample references unknown "
+                            f"reward_spec id {sample.spec_id}"
+                        )
+                    if len(spec.fields) and len(sample.values) != len(spec.fields):
+                        raise MLCParseError(
+                            f"{location}reward sample x length "
+                            f"{len(sample.values)} does not match "
+                            f"reward_spec[{sample.spec_id}].fields length "
+                            f"{len(spec.fields)}"
+                        )
+                    reward_samples.append(sample)
                 else:
                     raise MLCParseError(
                         f"{location}record without '$' is not a known compact "
@@ -118,19 +148,64 @@ def read_mlc_ndjson(path: str | Path) -> MLCParseResult:
 
             # --- typed record ---
             if kind == "header":
+                if header is not None:
+                    raise MLCParseError(
+                        f"Line {lineno} of {p}: duplicate header record"
+                    )
                 header = _parse_header(rec, lineno, p)
             elif kind == "body":
                 body = _parse_body(rec, lineno, p)
+                if body.id in bodies:
+                    raise MLCParseError(
+                        f"Line {lineno} of {p}: duplicate body id {body.id}"
+                    )
                 bodies[body.id] = body
             elif kind == "step":
                 step = _parse_step(rec, lineno, p)
+                if steps:
+                    last = steps[-1]
+                    if step.index == last.index:
+                        raise MLCParseError(
+                            f"Line {lineno} of {p}: duplicate step index "
+                            f"{step.index}"
+                        )
+                    if step.index < last.index:
+                        raise MLCParseError(
+                            f"Line {lineno} of {p}: step index went backwards "
+                            f"({step.index} after {last.index})"
+                        )
+                    if step.t < last.t:
+                        raise MLCParseError(
+                            f"Line {lineno} of {p}: step time went backwards "
+                            f"(t={step.t} after t={last.t})"
+                        )
                 steps.append(step)
                 current_step = step
             elif kind == "action_spec":
                 spec = _parse_action_spec(rec, lineno, p)
+                if spec.id in action_specs:
+                    raise MLCParseError(
+                        f"Line {lineno} of {p}: duplicate action_spec id {spec.id}"
+                    )
                 action_specs[spec.id] = spec
             elif kind == "reward_spec":
                 spec = _parse_reward_spec(rec, lineno, p)
+                if spec.id in reward_specs:
+                    raise MLCParseError(
+                        f"Line {lineno} of {p}: duplicate reward_spec id {spec.id}"
+                    )
+                # Soft contract: the first reward field is conventionally
+                # 'step_reward'. Warn rather than raise so producers can
+                # still emit logs while migrating.
+                if spec.fields and spec.fields[0] != "step_reward":
+                    _log.warning(
+                        "reward_spec[%d] on line %d of %s: fields[0] should "
+                        "be 'step_reward', got %r",
+                        spec.id,
+                        lineno,
+                        p,
+                        spec.fields[0],
+                    )
                 reward_specs[spec.id] = spec
             elif kind == "event":
                 events.append(_parse_event(rec, current_step, lineno, p))
@@ -181,6 +256,10 @@ def _parse_header(rec: dict[str, Any], lineno: int, path: Path) -> MLCHeader:
     if not isinstance(fmt, int):
         raise MLCParseError(
             f"Header on line {lineno} of {path} is missing integer 'format'"
+        )
+    if fmt != 1:
+        raise MLCParseError(
+            f"Header on line {lineno} of {path}: 'format' must be 1, got {fmt!r}"
         )
     return MLCHeader(
         format=fmt,
