@@ -371,6 +371,7 @@ mlc-cinema/
         entities.py
         scene_model.py
         transforms.py
+        attitude.py
         bounds.py
         camera.py
 
@@ -391,8 +392,13 @@ mlc-cinema/
 
   tests/
     test_mlc_reader.py
+    test_mlc_summary.py
+    test_cli_validate.py
     test_timeline.py
     test_transforms.py
+    test_attitude.py
+    test_scene_bounds.py
+    test_camera.py
 ```
 
 ---
