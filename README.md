@@ -17,7 +17,7 @@ The long-term goal is larger:
 `mlc-cinema` is currently at:
 
 ```text
-M1.0 — Real 3D viewport
+M1.1 — Attitude Frame Correctness
 ```
 
 The primary supported format is the canonical
@@ -63,6 +63,10 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
 - Real 3D viewport (pygfx + wgpu) with orbit camera, zoom, ground grid,
   world axes, body primitives, trajectory trails, and selected-body
   highlighting.
+- Converts MLC v1 ``q_body_to_ned`` attitude into Cinema viewer-frame
+  ``q_body_to_viewer`` at decode time.
+- Renderer receives viewer-frame quaternions and only performs
+  backend ordering conversion (``[w, x, y, z] → [x, y, z, w]``).
 - Auto-fit camera (`Frame All`) and `Reset Camera` actions.
 - Selected-body telemetry display, including step index, altitude (m),
   and source format.
@@ -76,9 +80,8 @@ This milestone is intentionally minimal. It is not yet a full rocket visualizer,
 
 The current version does **not** yet implement:
 
-- Body-to-viewer attitude conversion (rocket attitude is shown as the
-  raw NED-frame quaternion; visually approximate but not yet
-  frame-correct — see roadmap M1.1).
+- Rocket-specific attitude overlays (attitude indicator, tilt-angle
+  gauge, etc.).
 - Realistic rocket meshes.
 - Pan / advanced camera controls.
 - Thrust vector visualization.
@@ -559,43 +562,27 @@ M1.1 — Attitude Frame Correctness
 Status:
 
 ```text
-Planned
+Implemented
 ```
 
-Goal:
+Focus:
+
+- NED-to-viewer attitude conversion.
+- ``q_body_to_ned → q_body_to_viewer`` at decode time.
+- Unit-tested quaternion frame conversion (`tests/test_attitude.py`).
+- Renderer no longer depends on MLC / NED attitude semantics; it
+  performs only the backend ordering conversion
+  ``[w, x, y, z] → [x, y, z, w]``.
+
+Composition rule:
 
 ```text
-Make rendered body orientation match the MLC v1 attitude in the
-viewer frame, not just the raw NED quaternion.
+q_body_to_viewer = q_ned_to_viewer ⊗ q_body_to_ned
 ```
 
-The current renderer converts position and velocity from NED to the
-cinema viewer frame:
-
-```text
-x_view =  pe
-y_view =  pn
-z_view = -pd
-```
-
-…but feeds the body quaternion through unchanged (after
-`(w,x,y,z) → (x,y,z,w)` for pylinalg). That is acceptable for M1.0
-rough replay, but bodies' orientations are visually off because
-``q_body_to_NED`` is not the same as ``q_body_to_viewer``.
-
-M1.1 should:
-
-- Add an explicit attitude conversion in `mlc_v1.py` (or a new
-  `scene/attitude.py`): ``q_body_to_viewer = q_NED_to_viewer · q_body_to_NED``.
-- Apply the conversion at decode time, so renderers always receive
-  viewer-frame quaternions.
-- Add unit tests against synthetic attitudes
-  (e.g. yaw=90° about NED-down should rotate body forward from north
-  to east in the viewer).
-- Update the renderer to assume the quaternion is already
-  viewer-frame.
-
-This must land before any rocket-attitude / thrust-vector work in M2.
+with ``q_ned_to_viewer = [0, 1/√2, 1/√2, 0]`` (180° rotation about
+the NED north–east bisector, equivalent to the basis change that
+sends NED north→viewer +Y, NED east→viewer +X, NED down→viewer −Z).
 
 ---
 
@@ -713,26 +700,24 @@ Possible features:
 
 ## Near-Term Priority
 
-The current version is M1.0 (real 3D viewport). The recommended next
-steps, in order, are:
+The current version is M1.1 (frame-correct attitude). The recommended
+next steps, in order, are:
 
 ```text
-M1.1 — Attitude Frame Correctness
 M1.5 — Replay UX and Inspection Polish
 M2.0 — Rocket Visualization Layer
 ```
-
-M1.1 is a small but important correctness milestone: rocket attitude
-will not be visually right until ``q_body_to_NED`` is converted to
-``q_body_to_viewer`` in the decoder. This must land before any
-rocket-attitude / thrust-vector work in M2.
 
 M1.5 is a polish milestone: cache per-body trajectory arrays so trail
 recomputation stays cheap for long high-rate logs, plus assorted
 inspection-experience improvements.
 
+After M1.5, M2.0 can introduce rocket-specific overlays (thrust
+vector, attitude indicator, throttle flame, propellant gauge,
+landing-pad markers) on top of the now-frame-correct replay.
+
 Do not rush into simulator-specific features too early. First make
-the generic MLC replay experience solid and frame-correct.
+the generic MLC replay experience solid; M1.1 made it frame-correct.
 
 ---
 
@@ -761,17 +746,17 @@ license string.
 ## Status Summary
 
 ```text
-Current milestone: M1.0
-Current role: MLC v1 desktop 3D replay viewer
+Current milestone: M1.1
+Current role: MLC v1 desktop 3D replay viewer with frame-correct attitude
 Current maturity: early but useful engineering visualizer
 Primary value:
   - consumes canonical MLC v1
   - validates logs (mlc-cinema-validate)
   - replays multi-body motion in 3D
+  - converts position, velocity, and attitude into Cinema viewer frame
   - provides telemetry and trajectory inspection
 Next milestone:
-  M1.1 — attitude frame correctness
-Then:
   M1.5 — replay UX polish
+Then:
   M2.0 — rocket visualization layer
 ```

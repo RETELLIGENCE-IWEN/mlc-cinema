@@ -21,7 +21,17 @@ EXAMPLE_ARE = _EXAMPLES / "action_reward_event_demo_v1.mlc.ndjson"
 
 
 def _zeros28() -> list[float]:
-    return [0.0] * MLC_V1_STATE_LEN
+    """A minimal-but-valid 28-vector for tests.
+
+    Everything zero except the quaternion, which is identity
+    (``qw=1``) so the decoder accepts the row. Tests that need a
+    specifically zero or unit quaternion should construct their own
+    vector instead of using this helper.
+    """
+
+    out = [0.0] * MLC_V1_STATE_LEN
+    out[12] = 1.0  # qw = 1 → identity attitude
+    return out
 
 
 def _write_log(tmp_path: Path, name: str, records: list[dict]) -> Path:
@@ -118,8 +128,11 @@ def test_reader_parses_mlc_v1_step_scoped_body_states() -> None:
     # Velocity decoded as [ve, vn, -vd] from x[7], x[6], -x[8].
     np.testing.assert_allclose(s0.velocity, [0.0, 0.0, -10.0])
 
-    # Quaternion taken verbatim from x[12:16].
-    np.testing.assert_allclose(s0.quaternion, [1.0, 0.0, 0.0, 0.0])
+    # x[12:16] holds q_body_to_ned = [1, 0, 0, 0] (identity); decoder
+    # converts to q_body_to_viewer = q_ned_to_viewer = [0, 1/√2, 1/√2, 0].
+    import math
+    s = 1.0 / math.sqrt(2.0)
+    np.testing.assert_allclose(s0.quaternion, [0.0, s, s, 0.0], atol=1e-12)
 
     # Altitude_m taken verbatim from x[2].
     assert s0.altitude_m == 220.0

@@ -211,8 +211,10 @@ class PygfxViewport(QWidget):
                 pass
             q = body_state.quaternion
             if q is not None and len(q) == 4:
-                # MLC v1 quaternion is scalar-first (w, x, y, z); pygfx
-                # / pylinalg uses (x, y, z, w).
+                # Cinema internal quaternion is q_body_to_viewer in
+                # scalar-first (w, x, y, z). pygfx / pylinalg expects
+                # (x, y, z, w) — the renderer only does the ordering
+                # conversion; no NED awareness needed here.
                 try:
                     mesh.local.rotation = (
                         float(q[1]), float(q[2]), float(q[3]), float(q[0])

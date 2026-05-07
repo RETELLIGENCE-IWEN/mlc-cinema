@@ -77,10 +77,14 @@ class MLCRewardSpec:
 class MLCState:
     """Decoded body state at one timestamp, in viewer-frame coordinates.
 
-    Position/velocity are already converted from NED to the cinema
-    viewer frame (``x = pe, y = pn, z = -pd``). ``altitude_m`` carries
-    the geodetic altitude from MLC v1 ``x[2]``; the renderer's vertical
-    axis still uses ``position[2]`` (= ``-pd_m``).
+    Position and velocity are converted from MLC v1 NED to the cinema
+    viewer frame (``x = pe, y = pn, z = -pd``). ``quaternion`` is also
+    converted, from ``q_body_to_ned`` to ``q_body_to_viewer``, so
+    renderers never have to know about NED. All internal quaternions
+    remain scalar-first ``[w, x, y, z]``.
+
+    ``altitude_m`` carries the geodetic altitude from MLC v1 ``x[2]``;
+    the renderer's vertical axis still uses ``position[2]`` (=``-pd_m``).
     """
 
     t: float

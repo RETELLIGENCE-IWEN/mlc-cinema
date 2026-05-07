@@ -11,6 +11,10 @@ Coordinate conversion:
         x_view =  pe_m
         y_view =  pn_m
         z_view = -pd_m
+    Velocities convert the same way.
+    Attitudes are converted from ``q_body_to_NED`` to
+    ``q_body_to_viewer`` (see ``mlc_cinema.scene.attitude``); downstream
+    consumers receive a viewer-frame body quaternion only.
 """
 
 from __future__ import annotations
@@ -20,6 +24,9 @@ from typing import Any
 import numpy as np
 
 from mlc_cinema.mlc.records import MLCParseError, MLCState, MLCStep
+from mlc_cinema.scene.attitude import (
+    body_to_ned_quaternion_to_body_to_viewer_wxyz,
+)
 
 
 SOURCE_FORMAT: str = "mlc_v1"
@@ -129,10 +136,19 @@ def decode_mlc_v1_body_state(
         [x[IDX_VE_MPS], x[IDX_VN_MPS], -x[IDX_VD_MPS]],
         dtype=np.float64,
     )
-    quaternion = np.array(
+    # MLC v1 stores q_body_to_ned. Cinema state stores q_body_to_viewer.
+    q_body_to_ned = np.array(
         [x[IDX_QW], x[IDX_QX], x[IDX_QY], x[IDX_QZ]],
         dtype=np.float64,
     )
+    try:
+        quaternion = body_to_ned_quaternion_to_body_to_viewer_wxyz(
+            q_body_to_ned
+        )
+    except ValueError as exc:
+        raise MLCParseError(
+            f"{location}body state has invalid quaternion: {exc}"
+        ) from exc
     angular_velocity = np.array(
         [x[IDX_P_RADPS], x[IDX_Q_RADPS], x[IDX_R_RADPS]],
         dtype=np.float64,
